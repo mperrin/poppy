@@ -1,6 +1,7 @@
 
 import numpy as np
 
+from poppy_core import _log
 
 #  Functions for reasonably exact geometry on discrete arrays
 #  These codes allow you to calculate circles and other such
@@ -10,11 +11,12 @@ import numpy as np
 
 
 # original code in pixwt.c by Marc Buie
+#    See http://www.boulder.swri.edu/~buie/idl/downloads/custom/32bit/pixwt.c
 # 
 # ported to pixwt.pro (IDL) by Doug Loucks, Lowell Observatory, 1992 Sep
 #
-# subsequently ported to python by Michael Fitzgerald,
-# LLNL, fitzgerald15@llnl.gov, 2007-10-16
+# subsequently ported to python by Michael Fitzgerald, LLNL, 2007 Oct
+# and used in poppy by permission
 #
 
 def _arc(x, y0, y1, r):
@@ -50,6 +52,9 @@ def _oneside(x, y0, y1, r):
 
     if np.all((x==0)): return x
 
+    if np.isscalar(x): x = np.asarray(x)
+    if np.isscalar(y0): y0 = np.asarray(y0)
+    if np.isscalar(y1): y1 = np.asarray(y1)
     sx = x.shape
     ans = np.zeros(sx, dtype=np.float)
     yh = np.zeros(sx, dtype=np.float)
@@ -144,15 +149,16 @@ def pixwt(xc, yc, r, x, y):
 
     area = pixwt( xc, yc, r, x, y )
 
-    xc, yc : Center of the circle, numeric scalars
-    r      : Radius of the circle, numeric scalars
-    x, y   : Center of the unit pixel, numeric scalar or vector
+    xc, yc : Center of the circle, numpy scalars
+    r      : Radius of the circle, numpy scalars
+    x, y   : Center of the unit pixel, numpy scalar or vector
     """
     return _intarea(xc, yc, r, x-0.5, x+0.5, y-0.5, y+0.5)
 
 
 
-def filled_circle_aa(shape, xcenter, ycenter, radius, xarray=None, yarray=None, fillvalue=1, clip=True, cliprange=(0,1)):
+def filled_circle_aa(shape, xcenter, ycenter, radius, xarray=None, yarray=None, 
+        fillvalue=1, clip=True, cliprange=(0,1)):
     """Draw a filled circle with subpixel antialiasing into an array.
 
     Parameters
@@ -167,6 +173,7 @@ def filled_circle_aa(shape, xcenter, ycenter, radius, xarray=None, yarray=None, 
     xarray, yarray : 2d ndarrays
         X and Y coordinates corresponding to the center of each pixel
         in the main array. If not present, integer pixel indices are assumed.
+        WARNING - code currently is buggy with pixel scales != 1
     fillvalue : float
         Value to add into the array, for pixels that are entirely within the radius.
         This is *added* to each pixel at the specified coordinates. Default is 1
@@ -175,7 +182,6 @@ def filled_circle_aa(shape, xcenter, ycenter, radius, xarray=None, yarray=None, 
     cliprange : array_like
         if clip is True, give values to use in the clip function.
     """
-
 
 
 
@@ -189,14 +195,20 @@ def filled_circle_aa(shape, xcenter, ycenter, radius, xarray=None, yarray=None, 
     array[r < radius ]  = fillvalue
 
     pixscale = np.abs(xarray[0,1] - xarray[0,0])
+    area_per_pix = pixscale**2
+
+    if np.abs(pixscale -1.0) > 0.01:
+        _log.warning('filled_circle_aa is not reliable for pixel scale <1')
     border = np.where( np.abs(r-radius) < pixscale)
 
     weights = pixwt(xcenter, ycenter, radius, xarray[border], yarray[border])
 
-    array[border] = weights
+    array[border] = weights *fillvalue/area_per_pix
+    #sasdasd
 
 
     if clip:
         assert len(cliprange) == 2
-        np.clip(array, *cliprange)
-    return array
+        return np.asarray(array).clip(*cliprange)
+    else:
+        return array

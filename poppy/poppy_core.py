@@ -2237,7 +2237,7 @@ class OpticalElement(object):
             cmap = cmap_opd
             norm = norm_opd
         else:
-            raise ValueError("Invalid value for 'what' parameter")
+            raise ValueError('Invalid selection for what to plot: '+what)
 
         # now we plot whichever was chosen...
         if ax is None:
