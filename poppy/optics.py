@@ -7,6 +7,7 @@ import matplotlib
 import astropy.io.fits as fits
 
 from . import utils
+from . import geometry
 
 import logging
 import collections
@@ -624,15 +625,22 @@ class AnnularFieldStop(AnalyticOpticalElement):
 
         y, x = self.get_coordinates(wave)
         r = np.sqrt(x ** 2 + y ** 2)  #* wave.pixelscale
+        
+        pxscl = x[0,1]-x[0,0]
+        ypix=y/pxscl  # The filled_circle_aa code and in particular pxwt doesn't seem reliable with pixel scale <1
+        xpix=x/pxscl
 
-        self.transmission = np.ones(wave.shape)
+        if self.radius_outer > 0:
+            #w_outside = np.where(r >= self.radius_outer)
+            #self.transmission[w_outside] = 0
+            self.transmission = geometry.filled_circle_aa(wave.shape, 0,0, self.radius_outer/pxscl, xarray=xpix, yarray=ypix)
+        else:
+            self.transmission = np.ones(wave.shape)
 
         if self.radius_inner > 0:
-            w_inside = np.where(r <= self.radius_inner)
-            self.transmission[w_inside] = 0
-        if self.radius_outer > 0:
-            w_outside = np.where(r >= self.radius_outer)
-            self.transmission[w_outside] = 0
+            self.transmission -= geometry.filled_circle_aa(wave.shape, 0,0, self.radius_inner/pxscl, xarray=xpix, yarray=ypix)
+            #w_inside = np.where(r <= self.radius_inner)
+            #self.transmission[w_inside] = 0
 
         return self.transmission
 

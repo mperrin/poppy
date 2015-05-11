@@ -1942,13 +1942,15 @@ class OpticalElement(object):
             cb_values = [0,0.25, 0.5, 0.75, 1.0]
             cmap = cmap_amp
             norm = norm_amp
-        elif what =='phase':
+        elif what =='phase':  # FIXME this is not really phase, it's OPD!
             plot_array = opd
             title = "OPD"
             cb_label = 'meters'
             cb_values = np.array([-1, -0.5, 0, 0.5, 1])*opd_vmax
             cmap = cmap_opd
             norm = norm_opd
+        else:
+            raise ValueError('Invalid selection for what to plot: '+what)
 
         # now we plot whichever was chosen...
         if ax is None:
