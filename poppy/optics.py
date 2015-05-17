@@ -917,15 +917,18 @@ class CircularAperture(AnalyticOpticalElement):
                              "to define the spacing")
         assert (wave.planetype != _IMAGE)
 
-        y, x = self.get_coordinates(wave)
-        r = np.sqrt(x ** 2 + y ** 2)
-        del x
-        del y
 
-        w_outside = np.where(r > self.radius)
-        del r
-        self.transmission = np.ones(wave.shape)
-        self.transmission[w_outside] = 0
+        y, x = self.get_coordinates(wave)
+        #r = np.sqrt(x ** 2 + y ** 2)
+        #del x
+        #del y
+
+        #w_outside = np.where(r > self.radius)
+        #del r
+        #self.transmission = np.ones(wave.shape)
+        #self.transmission[w_outside] = 0
+        pixscale = np.abs(x[0,1] - x[0,0])
+        self.transmission = geometry.filled_circle_aa(wave.shape, 0,0,self.radius/pixscale,x/pixscale, y/pixscale)
         return self.transmission
 
 
