@@ -82,8 +82,9 @@ class AnalyticOpticalElement(OpticalElement):
             taken from the optic's properties, if defined. Otherwise defaults to
             6.5 meters or 2 arcseconds depending on plane.
         what : string
-            What to return: optic 'amplitude' transmission, 'intensity' transmission, or
-            'phase'.  Note that phase with phase_unit = 'meters' should give the optical path
+            What to return: optic 'amplitude' transmission, 'intensity' transmission,
+            'surface' i.e. OPD, or 'phase'.  Note that phase with phase_unit = 'meters' is
+            equivalent to 'surface' and should give the optical path
             difference, OPD.
         phase_unit : string
             Unit for returned phase array IF what=='phase'. One of 'radians', 'waves', 'meters'.
@@ -152,7 +153,7 @@ class AnalyticOpticalElement(OpticalElement):
             Number of pixels to use when sampling the analytic optical element.
 
         what : str
-            What to display: 'intensity', 'phase', or 'both'
+            What to display: 'intensity', 'surface' or 'phase', or 'both'
         ax : matplotlib.Axes instance
             Axes to display into
         nrows, row : integers
@@ -849,15 +850,18 @@ class CircularAperture(AnalyticOpticalElement):
                              "to define the spacing")
         assert (wave.planetype == _PUPIL)
 
-        y, x = self.get_coordinates(wave)
-        r = np.sqrt(x ** 2 + y ** 2)
-        del x
-        del y
 
-        w_outside = np.where(r > self.radius)
-        del r
-        self.transmission = np.ones(wave.shape)
-        self.transmission[w_outside] = 0
+        y, x = self.get_coordinates(wave)
+        #r = np.sqrt(x ** 2 + y ** 2)
+        #del x
+        #del y
+
+        #w_outside = np.where(r > self.radius)
+        #del r
+        #self.transmission = np.ones(wave.shape)
+        #self.transmission[w_outside] = 0
+        pixscale = np.abs(x[0,1] - x[0,0])
+        self.transmission = geometry.filled_circle_aa(wave.shape, 0,0,self.radius/pixscale,x/pixscale, y/pixscale)
         return self.transmission
 
 
