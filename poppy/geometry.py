@@ -1,7 +1,6 @@
 
 import numpy as np
 
-from poppy_core import _log
 
 #  Functions for reasonably exact geometry on discrete arrays
 #  These codes allow you to calculate circles and other such
@@ -14,9 +13,8 @@ from poppy_core import _log
 # 
 # ported to pixwt.pro (IDL) by Doug Loucks, Lowell Observatory, 1992 Sep
 #
-# subsequently ported to python by Michael Fitzgerald,
-# LLNL, fitzgerald15@llnl.gov, 2007-10-16
-#
+# subsequently ported to python by Michael Fitzgerald, 2007-10-16
+# LLNL / UCLA
 
 def _arc(x, y0, y1, r):
     """
@@ -199,7 +197,6 @@ def filled_circle_aa(shape, xcenter, ycenter, radius, xarray=None, yarray=None, 
     weights = pixwt(xcenter, ycenter, radius, xarray[border], yarray[border])
 
     array[border] = weights *fillvalue/area_per_pix
-    #sasdasd
 
 
     if clip:
