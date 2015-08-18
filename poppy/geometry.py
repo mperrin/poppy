@@ -1,7 +1,6 @@
 
 import numpy as np
 
-from poppy_core import _log
 
 #  Functions for reasonably exact geometry on discrete arrays
 #  These codes allow you to calculate circles and other such
@@ -204,7 +203,6 @@ def filled_circle_aa(shape, xcenter, ycenter, radius, xarray=None, yarray=None,
     weights = pixwt(xcenter, ycenter, radius, xarray[border], yarray[border])
 
     array[border] = weights *fillvalue/area_per_pix
-    #sasdasd
 
 
     if clip:
