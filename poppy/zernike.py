@@ -359,7 +359,12 @@ def hex_aperture(npix=1024, rho=None, theta=None, vertical=False):
         the whole array from edge to edge in the direction aligned
         with its flat sides. (Ignored when `rho` and `theta` are
         supplied.)
-    rho, theta : 2D numpy arrays
+
+        Note: There will be one zeroed column (or row) flanking the
+        non-flat sides, since only pixels *completely* enclosed in the
+        hexagon will have nonzero values. (If you need anti-aliased
+        hexagons, consider oversampling and then resizing the array.)
+    rho, theta : 2D numpy arrays, optional
         For some square aperture, rho and theta contain each pixel's
         coordinates in polar form. The hexagon will be defined such
         that it can be circumscribed in a rho = 1 circle.
@@ -380,9 +385,9 @@ def hex_aperture(npix=1024, rho=None, theta=None, vertical=False):
     absy = np.abs(y)
 
     aperture = np.zeros(x.shape)
-    w_rect = np.where((np.abs(x) <= 0.5) & (np.abs(y) <= np.sqrt(3) / 2))
-    w_left_tri = np.where((x <= -0.5) & (x >= -1) & (absy <= (x + 1) * np.sqrt(3)))
-    w_right_tri = np.where((x >= 0.5) & (x <= 1) & (absy <= (1 - x) * np.sqrt(3)))
+    w_rect = np.where((np.abs(x) <= 0.5) & (np.abs(y) < np.sqrt(3) / 2))
+    w_left_tri = np.where((x < -0.5) & (x > -1) & (absy < (x + 1) * np.sqrt(3)))
+    w_right_tri = np.where((x > 0.5) & (x < 1) & (absy < (1 - x) * np.sqrt(3)))
     aperture[w_rect] = 1
     aperture[w_left_tri] = 1
     aperture[w_right_tri] = 1
