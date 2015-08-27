@@ -136,3 +136,28 @@ def test_cross_hexikes():
     """
     for testj in (2, 3, 4, 5, 6):
         _test_cross_hexikes(testj=testj, nterms=6)
+
+def test_hex_aperture_even_odd_npix():
+    """Issue reported by Alex Greenbaum where even-npix
+    hex apertures had an extra zero column on each side
+    but odd-npix ones did not.
+    
+    In an effort to make the behavior consistent, the `hex_aperture`
+    function now only includes pixels entirely enclosed by the hexagon
+    in the aperture, so the pointiest corner near the array edge will
+    always be chopped off (not included) resulting in a zero column
+    at the edge.
+    """
+    from poppy.zernike import hex_aperture
+
+    odd_hex = hex_aperture(npix=127)
+    assert np.max(odd_hex[:,0]) == 0.0
+    assert np.max(odd_hex[:,1]) == 1.0
+    assert np.max(odd_hex[:,-2]) == 1.0
+    assert np.max(odd_hex[:,-1]) == 0.0
+
+    even_hex = hex_aperture(npix=128)
+    assert np.max(even_hex[:,0]) == 0.0
+    assert np.max(even_hex[:,1]) == 1.0
+    assert np.max(even_hex[:,-2]) == 1.0
+    assert np.max(even_hex[:,-1]) == 0.0
