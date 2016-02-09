@@ -59,6 +59,20 @@ def test_scalar_transmission():
         assert( np.all(optic.getPhasor(wave) == transmission))
 
 
+
+def test_roundtrip_through_FITS():
+    """ Verify we can make an analytic element, turn it into a FITS file and back,
+    and get the same thing
+    """
+    optic = optics.ParityTestAperture()
+    array = optic.sample(npix=512)
+
+    fitsfile = optic.to_fits(npix=512)
+    optic2 = poppy_core.FITSOpticalElement(transmission=fitsfile)
+
+    assert np.all(optic2.amplitude == array), "Arrays before/after casting to FITS file didn't match"
+
+
 #------ Analytic Image Plane elements -----
 
 def test_RectangularFieldStop():
@@ -115,6 +129,47 @@ def test_AnnularFieldStop():
     assert area_upper_bound > expected_area
     assert area_upper_bound < expected_area*1.1
 
+
+def test_BandLimitedOcculter(halfsize = 5) :
+    # For now, just tests the center pixel value.
+    # See https://github.com/mperrin/poppy/issues/137
+
+    mask = optics.BandLimitedCoron( kind = 'circular',  sigma = 1.)
+
+    # odd number of pixels; center pixel should be 0
+    sample = mask.sample(npix = 2*halfsize+1, grid_size = 10, what = 'amplitude')
+    assert sample[halfsize, halfsize] == 0
+    assert sample[halfsize, halfsize] != sample[halfsize-1, halfsize]
+    assert sample[halfsize+1, halfsize] == sample[halfsize-1, halfsize]
+
+    # even number of pixels; center 4 should be equal
+    sample2 = mask.sample(npix = 2*halfsize, grid_size = 10, what = 'amplitude')
+    assert sample2[halfsize, halfsize] != 0
+    assert sample2[halfsize-1, halfsize-1] == sample2[halfsize, halfsize]
+    assert sample2[halfsize-1, halfsize] == sample2[halfsize, halfsize]
+    assert sample2[halfsize, halfsize-1] == sample2[halfsize, halfsize]
+
+
+
+def test_rotations():
+    # Some simple tests of the rotation code on AnalyticOpticalElements. Incomplete!
+
+    # rotating a square by +45 and -45 should give the same result
+    ar1 = optics.SquareAperture(rotation=45, size=np.sqrt(2)).sample(npix=256, grid_size=2)
+    ar2 = optics.SquareAperture(rotation=-45, size=np.sqrt(2)).sample(npix=256, grid_size=2)
+    assert np.allclose(ar1,ar2)
+
+    # rotating a rectangle with flipped side lengths by 90 degrees should give the same result
+    fs1 = optics.RectangularFieldStop(width=1, height=10).sample(npix=256, grid_size=10)
+    fs2 = optics.RectangularFieldStop(width=10, height=1, rotation=90).sample(npix=256, grid_size=10)
+    assert np.allclose(fs1,fs2)
+
+    # check some pixel values for a 45-deg rotated rectangle
+    fs3 = optics.RectangularFieldStop(width=10, height=1, rotation=45).sample(npix=200, grid_size=10)
+    for i in [50, 100, 150]:
+        assert fs3[i, i]==1
+        assert fs3[i, i+20]!=1
+        assert fs3[i, i-20]!=1
 
 #def test_rotations_RectangularFieldStop():
 #
@@ -348,6 +403,38 @@ def test_AsymmetricObscuredAperture(display=False):
         utils.display_PSF(numeric, vmin=1e-8, vmax=1e-2, colorbar=False)
         #pl.title("Numeric")
 
+def test_GaussianAperture(display=False):
+    """ Test the Gaussian aperture """
+
+    ga = optics.GaussianAperture(fwhm=1)
+    w = poppy_core.Wavefront(npix=101) # enforce odd npix so there is a pixel at the exact center
+
+    w *= ga
+
+    assert(ga.w == ga.fwhm/(2*np.sqrt(np.log(2))))
+
+    assert(w.intensity.max() ==1)
+
+
+    # now mock up a wavefront with very specific coordinate values
+    # namely the origin, one HWHM away, and one w or sigma away.
+    class mock_wavefront(poppy_core.Wavefront):
+        def __init__(self, *args, **kwargs):
+            #super(poppy.Wavefront, self).__init__(*args, **kwargs) # super does not work for some reason?
+            poppy_core.Wavefront.__init__(self, *args, **kwargs)
+
+            self.wavefront = np.ones(5)
+            self.planetype=poppy_core.PlaneType.pupil
+            self.pixelscale = 0.5
+        def coordinates(self):
+            return (np.asarray([0,0.5, 0.0, ga.w, 0.0]), np.asarray([0, 0, 0.5, 0, -ga.w ]))
+
+    trickwave = mock_wavefront()
+    trickwave *= ga
+    assert(trickwave.amplitude[0]==1)
+    assert(np.allclose(trickwave.amplitude[1:3], 0.5))
+    assert(np.allclose(trickwave.amplitude[3:5], np.exp(-1)))
+
 
 def test_ThinLens(display=False):
     pupil_radius = 1
@@ -386,8 +473,13 @@ def test_ThinLens(display=False):
     osys2.addDetector(pixelscale=0.01, fov_arcsec=3.0)
     psf2 = osys2.calcPSF()
 
-    THRESHOLD = 1e-19
-    assert np.std(psf[0].data - psf2[0].data) < THRESHOLD, (
+
+    if display:
+        import poppy
+        poppy.display_PSF(psf)
+        poppy.display_PSF(psf2)
+
+    assert np.allclose(psf[0].data,psf2[0].data), (
         "ThinLens shouldn't be affected by null optical elements! Introducing extra image planes "
-        "raised std(psf_with_extras - psf_without_extras) above {}".format(THRESHOLD)
+        "made the output PSFs differ beyond numerical tolerances."
     )

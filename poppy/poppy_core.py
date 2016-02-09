@@ -1,27 +1,27 @@
 from __future__ import (absolute_import, division, print_function, unicode_literals)
 import multiprocessing
 import copy
+import time
+import enum
+
 import six
+
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.ndimage.interpolation
 import matplotlib
-import time
 
 import astropy.io.fits as fits
-
+import astropy.units as u
 
 from .matrixDFT import MatrixFourierTransform
 from . import utils
 from . import conf
 
-
-
 import logging
 _log = logging.getLogger('poppy')
 
-
-__all__ = ['Wavefront',  'OpticalSystem', 'SemiAnalyticCoronagraph', 'OpticalElement', 'FITSOpticalElement', 'Rotation', 'Detector' ]
+__all__ = ['Wavefront',  'OpticalSystem', 'SemiAnalyticCoronagraph', 'MatrixFTCoronagraph', 'OpticalElement', 'FITSOpticalElement', 'Rotation', 'Detector' ]
 
 # Setup infrastructure for FFTW
 _FFTW_INIT = {}  # dict of array sizes for which we have already performed the required FFTW planning step
@@ -31,20 +31,25 @@ try:
     import pyfftw
     _FFTW_AVAILABLE = True
 except ImportError:
+    pyfftw = None
     _FFTW_AVAILABLE = False
 
 # internal constants for types of plane
-_PUPIL = 'PUPIL'
-_IMAGE = 'IMAGE'
-_DETECTOR = 'DETECTOR' # specialized type of image plane.
-_ROTATION = 'ROTATION' # not a real optic, just a coordinate transform
-#_typestrs = {0:'', 1:'Pupil plane', 2:'Image plane', 3:'Detector', 4:'Rotation', 'PUPIL':'Pupil plane','IMAGE':'Image plane'}
+class PlaneType(enum.Enum):
+    unspecified = 0
+    pupil = 1
+    image = 2
+    detector = 3
+    rotation = 4
+    intermediate = 5
 
+_PUPIL = PlaneType.pupil
+_IMAGE = PlaneType.image
+_DETECTOR = PlaneType.detector  # specialized type of image plane
+_ROTATION = PlaneType.rotation  # not a real optic, just a coordinate transform
+_INTERMED = PlaneType.intermediate  # for Fresnel propagation
 
-#conversions
 _RADIANStoARCSEC = 180.*60*60 / np.pi
-
-
 
 #------ Utility functions for parallelization ------
 
@@ -62,10 +67,13 @@ def _wrap_propagate_for_multiprocessing(args):
     unpacking the results, and *then* at last making our instance method call.
     """
     optical_system, wavelength, retain_intermediates, normalize, usefftwflag = args
-    conf.use_fftw = usefftwflag  #passed in from parent process
+    conf.use_fftw = usefftwflag  # passed in from parent process
 
-    if conf.use_fftw and _FFTW_AVAILABLE: # we're in a different Python interpreter process so we
-        utils.fftw_load_wisdom()          # need to load the wisdom here too
+    # we're in a different Python interpreter process so we
+    # need to load the wisdom here too
+    if conf.use_fftw and _FFTW_AVAILABLE:
+        utils._loaded_fftw_wisdom = False
+        utils.fftw_load_wisdom()
 
     return optical_system.propagate_mono(wavelength, retain_intermediates=retain_intermediates, normalize=normalize)
 
@@ -121,7 +129,8 @@ class Wavefront(object):
 
         self.wavelength = float(wavelength)                 # wavelen in meters, obviously
         """Wavelength in meters """
-        self.diam= float(diam)                              # pupil plane size in meters
+
+        self.diam= float(diam) if not isinstance(diam, u.Quantity) else diam.to(u.m).value        # pupil plane size in meters
         """Diameter in meters. Applies to a pupil plane only."""
         self.fov = None                                     # image plane size in arcsec
         """Field of view in arcsec. Applies to an image plane only."""
@@ -200,7 +209,6 @@ class Wavefront(object):
         new *= optic
         return new
     __rmul__ = __mul__  # either way works.
-
 
     def __iadd__(self,wave):
         "Add another wavefront to this one"
@@ -324,172 +332,216 @@ class Wavefront(object):
         self.asFITS(**kwargs).writeto(filename, clobber=clobber)
         _log.info("  Wavefront saved to %s" % filename)
 
-    def display(self,what='intensity', nrows=1,row=1,showpadding=False,imagecrop=None, colorbar=False, crosshairs=True, ax=None, title=None,vmin=1e-8,vmax=1e0):
+    def display(self, what='intensity', nrows=1, row=1, showpadding=False,
+                imagecrop=None,pupilcrop=None,
+                colorbar=False, crosshairs=False, ax=None, title=None, vmin=None,
+                vmax=None, scale=None, use_angular_coordinates=None):
         """Display wavefront on screen
 
         Parameters
         ----------
         what : string
            What to display. Must be one of {intensity, phase, best}.
-           'Best' implies to display the phase if there is nonzero OPD, or else
-           display the intensity for a perfect pupil.
-
+           'Best' implies to display the phase if there is nonzero OPD,
+           or else display the intensity for a perfect pupil.
         nrows : int
-            Number of rows to display in current figure (used for showing steps in a calculation)
+            Number of rows to display in current figure (used for
+            showing steps in a calculation)
         row : int
             Which row to display this one in?
+        vmin, vmax : floats
+            min and maximum values to display.
+        scale : string
+            'log' or 'linear', to define the desired display scale type for
+            intensity. Default is log for image planes, linear otherwise.
         imagecrop : float, optional
-            For image planes, set the maximum # of arcseconds to display. Default is 5, so
-            only the innermost 5x5 arcsecond region will be shown. This default may be
-            changed in the POPPY config file. If the image size is < 5 arcsec then the
+            Crop the displayed image to a smaller region than the full array.
+            For image planes in angular coordinates, this is given in units of
+            arcseconds. The default is 5, so only the innermost 5x5 arcsecond
+            region will be shown. This default may be changed in the
+            POPPY config file. If the image size is < 5 arcsec then the
             entire image is displayed.
+            For planes in linear physical coordinates such as pupils, this
+            is given in units of meters, and the default is no cropping
+            (i.e. the entire array will be displayed unless this keyword
+            is set explicitly).
         showpadding : bool, optional
-            Show the entire padded arrays, or just the good parts? Default is False
+            For wavefronts that have been padded with zeros for oversampling,
+            show the entire padded arrays, or just the good parts?
+            Default is False, to show just the central region of interest.
         colorbar : bool
             Display colorbar
-        ax : matplotlib Axes
-            axes to display into
+        crosshairs : bool
+            Display a crosshairs indicator showing the axes centered on (0,0)
+        ax : matplotlib Axes, optional
+            axes to display into. If not set, will create new axes.
+        use_angular_coordinates : bool, optional
+            Should the axes be labeled in angular units of arcseconds?
+            This is used by FresnelWavefront, where non-angular
+            coordinates are possible everywhere. When using Fraunhofer
+            propagation, this should be left as None so that the
+            coordinates are inferred from the planetype attribute.
+            (Default: None, infer coordinates from planetype)
 
         Returns
         -------
         figure : matplotlib figure
             The current figure is modified.
-
-
         """
-        if imagecrop is None: imagecrop = conf.default_image_display_fov
+        if scale is None:
+            scale = 'log' if self.planetype == _IMAGE else 'linear'
 
         intens = self.intensity.copy()
-        phase  = self.phase.copy()
-        phase[np.where(intens ==0)] = np.nan
-        amp    = self.amplitude
+        phase = self.phase.copy()
+        phase[np.where(intens == 0)] = np.nan
+        amp = self.amplitude
 
-        if self.planetype==_PUPIL and self.ispadded and not showpadding :
-            intens = utils.removePadding(intens,self.oversample)
-            phase = utils.removePadding(phase,self.oversample)
-            amp = utils.removePadding(amp,self.oversample)
+        y, x = self.coordinates()
+        if self.planetype == _PUPIL and self.ispadded and not showpadding:
+            intens = utils.removePadding(intens, self.oversample)
+            phase = utils.removePadding(phase, self.oversample)
+            amp = utils.removePadding(amp, self.oversample)
+            y = utils.removePadding(y, self.oversample)
+            x = utils.removePadding(x, self.oversample)
 
-
-        # extent specifications need to include the *full* data region, including the half pixel on either
-        # side outside of the pixel center coordinates.  And remember to swap Y and X.  Recall that for matplotlib,
+        # extent specifications need to include the *full* data region, including the half pixel
+        # on either side outside of the pixel center coordinates.  And remember to swap Y and X.
+        # Recall that for matplotlib,
         #    extent = [xmin, xmax, ymin, ymax]
-        # in this case those are coordinates in units of pixels. Recall that we define pixel coordinates to be
-        # at the *center* of the pixel, so we compute here the coordinates at the outside of those pixels.
+        # in this case those are coordinates in units of pixels. Recall that we define pixel
+        # coordinates to be at the *center* of the pixel, so we compute here the coordinates at the
+        # outside of those pixels.
         # This is needed to get the coordinates right when displaying very small arrays
 
-        extent = np.array([-0.5 ,intens.shape[1]-1+0.5, -0.5,intens.shape[0]-1+0.5]) * self.pixelscale
-        if self.planetype == _PUPIL:
-            # For pupils, we just let the 0 point be that of the array, off to the side of the actual clear aperture
-            # No - now let's be consistent with how OpticalElement.display() works
-            cenx = (intens.shape[1]-1)/2.
-            ceny = (intens.shape[0]-1)/2.
-            extent -= np.asarray([cenx, cenx, ceny, ceny])*self.pixelscale
 
-            unit = "m"
-        else:
-            # for image planes, we make coordinates relative to center.
-            # image plane coordinates depend slightly on whether the optical center is at a
-            # pixel-center or the corner between 4 pixels...
-            if self._image_centered == 'array_center' or self._image_centered=='corner':
-                cenx = (intens.shape[1]-1)/2.
-                ceny = (intens.shape[0]-1)/2.
-            elif self._image_centered == 'pixel':
-                cenx = (intens.shape[1])/2.
-                ceny = (intens.shape[0])/2.
+        halfpix = self.pixelscale*0.5
+        extent = [x.min()-halfpix, x.max()+halfpix, y.min()-halfpix, y.max()+halfpix]
 
-            extent -= np.asarray([cenx, cenx, ceny, ceny])*self.pixelscale
-            halffov_x = intens.shape[1]/2.*self.pixelscale #for use later
-            halffov_y = intens.shape[0]/2.*self.pixelscale #for use later
-            unit="arcsec"
+        if use_angular_coordinates is None:
+            use_angular_coordinates = self.planetype == _IMAGE
+
+        unit = 'arcsec' if use_angular_coordinates else 'm'
 
         # implement semi-intellegent selection of what to display, if the user wants
-        if what =='best':
-            if self.planetype ==_IMAGE:
-                what = 'intensity' # always show intensity for image planes
+        if what == 'best':
+            if self.planetype == _IMAGE:
+                what = 'intensity'  # always show intensity for image planes
             elif phase[np.where(np.isfinite(phase))].sum() == 0:
-                what = 'intensity' # for perfect pupils
-            elif int(row) > 2: what='intensity'  # show intensity for coronagraphic downstream propagation.
-            else: what='phase' # for aberrated pupils
+                what = 'intensity'  # for perfect pupils
+            elif int(row) > 2:
+                what = 'intensity'  # show intensity for coronagraphic downstream propagation.
+            else:
+                what = 'phase'  # for aberrated pupils
 
         # compute plot parameters for the subplot grid
         nc = int(np.ceil(np.sqrt(nrows)))
-        nr = int(np.ceil(float(nrows)/nc))
-        if (nrows - nc*(nc-1) == 1) and (nr>1): # avoid just one alone on a row by itself...
+        nr = int(np.ceil(float(nrows) / nc))
+        if (nrows - nc * (nc - 1) == 1) and (nr > 1):  # avoid just one alone on a row by itself...
             nr -= 1
             nc += 1
 
+        # prepare color maps and normalizations for intensity and phase
+        if vmax is None:
+           vmax = intens.max()
+        if scale == 'linear':
+            if vmin is None: vmin=0
+            norm_inten = matplotlib.colors.Normalize(vmin=vmin, vmax=vmax)
+            cmap_inten = getattr(matplotlib.cm, conf.cmap_pupil_intensity)
+            cmap_inten.set_bad('0.0')
+        else:
+            if vmin is None: vmin = vmax*1e-6
+            norm_inten = matplotlib.colors.LogNorm(vmin=vmin, vmax=vmax)
+            cmap_inten = getattr(matplotlib.cm, conf.cmap_sequential)
+            cmap_inten.set_bad(cmap_inten(0))
+        cmap_phase = getattr(matplotlib.cm, conf.cmap_diverging)
+        cmap_phase.set_bad('0.3')
+        norm_phase = matplotlib.colors.Normalize(vmin=-0.25, vmax=0.25)
+
         # now display the chosen selection..
         if what == 'intensity':
-            if self.planetype == _PUPIL:
-                norm=matplotlib.colors.Normalize(vmin=0)
-                cmap = matplotlib.cm.gray
-                cmap.set_bad('0.0')
-            else:
-                norm=matplotlib.colors.LogNorm(vmin=vmin,vmax=vmax)
-                cmap = matplotlib.cm.jet
-                cmap.set_bad(cmap(0))
-
             if ax is None:
-                ax = plt.subplot(nr,nc,int(row))
+                ax = plt.subplot(nr, nc, int(row))
 
-            utils.imshow_with_mouseover(intens, ax=ax, extent=extent, norm=norm, cmap=cmap)
+            utils.imshow_with_mouseover(
+                intens,
+                ax=ax,
+                extent=extent,
+                norm=norm_inten,
+                cmap=cmap_inten,
+                origin='lower'
+            )
             if title is None:
-                title = "Intensity "+self.location
+                title = "Intensity " + self.location
                 title = title.replace('after', 'after\n')
                 title = title.replace('before', 'before\n')
-            plt.title(title)
-            plt.xlabel(unit)
-            if colorbar: plt.colorbar(ax.images[0], orientation='vertical', shrink=0.8)
-
-            if self.planetype ==_IMAGE:
-                if crosshairs:
-                    plt.axhline(0,ls=":", color='k')
-                    plt.axvline(0,ls=":", color='k')
-                imsize_x = min( (imagecrop, halffov_x))
-                imsize_y = min( (imagecrop, halffov_y))
-                ax.set_xbound(-imsize_x, imsize_x)
-                ax.set_ybound(-imsize_y, imsize_y)
+            ax.set_title(title)
+            ax.set_xlabel(unit)
+            if colorbar:
+                plt.colorbar(ax.images[0], orientation='vertical', shrink=0.8)
+            plot_axes = [ax]
             to_return = ax
-        elif what =='phase':
+        elif what == 'phase':
             # Display phase in waves.
-            cmap = matplotlib.cm.jet
-            cmap.set_bad('0.3')
-            norm=matplotlib.colors.Normalize(vmin=-0.25,vmax=0.25)
             if ax is None:
-                ax = plt.subplot(nr,nc,int(row))
-            utils.imshow_with_mouseover(phase/(np.pi*2), ax=ax, extent=extent, norm=norm, cmap=cmap)
+                ax = plt.subplot(nr, nc, int(row))
+            utils.imshow_with_mouseover(
+                phase / (np.pi * 2),
+                ax=ax,
+                extent=extent,
+                norm=norm_phase,
+                cmap=cmap_phase,
+                origin='lower'
+            )
             if title is None:
-                title= "Phase "+self.location
+                title = "Phase " + self.location
             plt.title(title)
             plt.xlabel(unit)
             if colorbar: plt.colorbar(ax.images[0], orientation='vertical', shrink=0.8)
 
+            plot_axes = [ax]
             to_return = ax
 
-        else:
+        elif what == 'both':
             if ax is None:
-                ax = plt.subplot(nr,nc,int(row))
-            cmap = matplotlib.cm.gray
-            ax1 = plt.subplot(nrows,2,(row*2)-1)
-            plt.imshow(amp,extent=extent,cmap=cmap)
+                ax = plt.subplot(nr, nc, int(row))
+            ax1 = plt.subplot(nrows, 2, (row * 2) - 1)
+            plt.imshow(amp, extent=extent, cmap=cmap_inten, norm=norm_inten, origin='lower')
             plt.title("Wavefront amplitude")
             plt.ylabel(unit)
             plt.xlabel(unit)
 
-            if colorbar: plt.colorbar(orientation='vertical',shrink=0.8)
+            if colorbar: plt.colorbar(orientation='vertical', shrink=0.8)
 
-            ax2 = plt.subplot(nrows,2,row*2)
-            plt.imshow(phase,extent=extent, cmap=cmap)
-            if colorbar: plt.colorbar(orientation='vertical',shrink=0.8)
+            ax2 = plt.subplot(nrows, 2, row * 2)
+            plt.imshow(phase, extent=extent, cmap=cmap_phase, norm=norm_phase, origin='lower')
+            if colorbar: plt.colorbar(orientation='vertical', shrink=0.8)
 
             plt.xlabel(unit)
             plt.title("Wavefront phase [radians]")
 
-            to_return = (ax1,ax2)
+            plot_axes = [ax1, ax2]
+            to_return = (ax1, ax2)
+        else:
+            raise ValueError("Invalid value for what to display; must be 'amplitude', 'phase', or 'both'.")
 
-        ax.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(5))
-        ax.yaxis.set_major_locator(matplotlib.ticker.MaxNLocator(5))
+        # now apply axes cropping and/or overplots, if requested.
+        for ax in plot_axes:
+            if crosshairs:
+                ax.axhline(0,ls=":", color='white')
+                ax.axvline(0,ls=":", color='white')
 
+            if use_angular_coordinates:
+                if imagecrop is None:
+                    imagecrop = conf.default_image_display_fov
+
+            if imagecrop is not None:
+                cropsize_x = min( (imagecrop/2, intens.shape[1]/2.*self.pixelscale))
+                cropsize_y = min( (imagecrop/2, intens.shape[0]/2.*self.pixelscale))
+                ax.set_xbound(-cropsize_x, cropsize_x)
+                ax.set_ybound(-cropsize_y, cropsize_y)
+
+            ax.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(5))
+            ax.yaxis.set_major_locator(matplotlib.ticker.MaxNLocator(5))
 
         plt.draw()
         return to_return
@@ -645,8 +697,6 @@ class Wavefront(object):
 
         if conf.enable_flux_tests: _log.debug("\tPost-FFT total intensity: "+str(self.totalIntensity))
 
-
-
     def _propagateMFT(self, det):
         """ Compute from pupil to an image using the Soummer et al. 2007 MFT algorithm
 
@@ -759,7 +809,6 @@ class Wavefront(object):
         self.planetype=_PUPIL
         self.pixelscale = self.diam / self.wavefront.shape[0]
 
-
     def tilt(self, Xangle=0.0, Yangle=0.0):
         """ Tilt a wavefront in X and Y.
 
@@ -783,33 +832,27 @@ class Wavefront(object):
             tilt angles, specified in arcseconds
 
         """
-        if self.planetype==_IMAGE:
+        if self.planetype == _IMAGE:
             raise NotImplementedError("Are you sure you want to tilt a wavefront in an _IMAGE plane?")
 
-        if np.abs(Xangle) > 0 or np.abs(Yangle)>0:
-            xangle_rad = Xangle * (np.pi/180/60/60)
-            yangle_rad = Yangle * (np.pi/180/60/60)
+        if np.abs(Xangle) > 0 or np.abs(Yangle) > 0:
+            xangle_rad = Xangle * (np.pi / 180 / 60 / 60)
+            yangle_rad = Yangle * (np.pi / 180 / 60 / 60)
 
             npix = self.wavefront.shape[0]
             V, U = np.indices(self.wavefront.shape, dtype=float)
-            V -= (npix-1)/2.0
+            V -= (npix - 1) / 2.0
             V *= self.pixelscale
-            U -= (npix-1)/2.0
+            U -= (npix - 1) / 2.0
             U *= self.pixelscale
 
-            tiltphasor = np.exp( 2j*np.pi * (U * xangle_rad + V * yangle_rad)/self.wavelength)
+            tiltphasor = np.exp(2.0j * np.pi * (U * xangle_rad + V * yangle_rad) / self.wavelength)
+            self.wavefront *= tiltphasor
+            self.history.append("Tilted wavefront by "
+                                "X={:2.2}, Y={:2.2} arcsec".format(Xangle, Yangle))
 
         else:
             _log.warn("Wavefront.tilt() called, but requested tilt was zero. No change.")
-            tiltphasor = 1.
-
-        #Compute the tilt of the wavefront required to shift it by some amount in the image plane.
-
-
-
-
-        self.wavefront *= tiltphasor
-        self.history.append("Tilted wavefront")
 
     def rotate(self, angle=0.0):
         """Rotate a wavefront by some amount
@@ -830,7 +873,9 @@ class Wavefront(object):
 
         self.history.append('Rotated by %f degrees, CCW' %(angle))
 
-
+    # note: the following are implemented as static methods to
+    # allow for reuse outside of this class in the Zernike polynomial
+    # caching mechanisms. See zernike.py.
     @staticmethod
     def pupil_coordinates(shape, pixelscale):
         """Utility function to generate coordinates arrays for a pupil
@@ -921,7 +966,7 @@ class Wavefront(object):
         """
 
         if self.planetype == _PUPIL:
-            return Wavefront.pupil_coordinates(self.shape, self.pixelscale)
+            return type(self).pupil_coordinates(self.shape, self.pixelscale)
         elif self.planetype == _IMAGE:
             return Wavefront.image_coordinates(self.shape, self.pixelscale,
                                                self._last_transform_type, self._image_centered)
@@ -954,16 +999,20 @@ class OpticalSystem(object):
         pixel.  Default is 2.
     verbose : bool
         whether to be more verbose with log output while computing
-
-
+    pupil_diameter : astropy.Quantity of dimension length
+        Diameter of entrance pupil. Defaults to size of first optical element
+        if unspecified, or else 1 meter.
 
 
     """
-    def __init__(self, name="unnamed system", verbose=True, oversample=2):
+    def __init__(self, name="unnamed system", verbose=True, oversample=2,
+            npix=1024, pupil_diameter=None):
         self.name = name
         self.verbose=verbose
         self.planes = []                    # List of OpticalElements
         self.oversample = oversample
+        self.npix = npix
+        self.pupil_diameter = pupil_diameter
 
         self.source_offset_r = 0 # = np.zeros((2))     # off-axis tilt of the source, in ARCSEC
         self.source_offset_theta = 0 # in degrees CCW
@@ -1035,6 +1084,7 @@ class OpticalSystem(object):
         if self.verbose: _log.info("Added pupil plane: "+self.planes[-1].name)
 
         return optic
+
 
     def addImage(self, optic=None, function=None, **kwargs):
         """ Add an image plane optic to the optical system
@@ -1163,6 +1213,7 @@ class OpticalSystem(object):
 
         return detector
 
+
     def describe(self):
         """ Print out a string table describing all planes in an optical system"""
         print( str(self)+"\n\t"+ "\n\t".join([str(p) for p in self.planes]) )
@@ -1176,7 +1227,8 @@ class OpticalSystem(object):
         the size of the first optical plane, assumed to be a pupil.
 
         If the first optical element is an Analytic pupil (i.e. has no pixel scale) then
-        an array of 1024x1024 will be created (not including oversampling).
+        the default size is set by the `npix` parameter to __init__ of this class, 
+        which itself has a default value of 1024.
 
         Uses self.source_offset to assign an off-axis tilt, if requested.
 
@@ -1192,8 +1244,23 @@ class OpticalSystem(object):
 
         """
 
-        npix = self.planes[0].shape[0] if self.planes[0].shape is not None else 1024
-        diam = self.planes[0].pupil_diam if hasattr(self.planes[0], 'pupil_diam') else 8
+        # somewhat complicated logic here for historical reasons. 
+        # if we have a first optical plane, check and see if it specifies the entrance sampling. 
+
+        npix=None
+        diam=None
+        if len(self.planes) > 0:
+            if self.planes[0].shape is not None: npix=self.planes[0].shape[0]
+            if hasattr(self.planes[0], 'pupil_diam') and self.planes[0].pupil_diam is not None: diam = self.planes[0].pupil_diam
+        # if still undefined, fall back to what is set for this optical system itself
+        if npix is None: npix=self.npix if self.npix is not None else 1024
+        if diam is None: diam = self.pupil_diameter if self.pupil_diameter is not None else 1
+
+
+        # if the diameter was specified as an astropy.Quantity, cast it to just a scalar in meters
+        if isinstance(diam, u.Quantity):
+            diam = diam.to(u.m).value
+
 
         inwave = Wavefront(wavelength=wavelength,
                 npix = npix,
@@ -1264,7 +1331,7 @@ class OpticalSystem(object):
                 wavefront.normalize()
                 wavefront *= np.sqrt(2)
             elif normalize.lower()=='exit_pupil': # normalize the last pupil in the system to 1
-                last_pupil_plane_index = np.where(np.asarray([p.planetype =='PUPIL' for p in self.planes]))[0].max() +1
+                last_pupil_plane_index = np.where(np.asarray([p.planetype is PlaneType.pupil for p in self.planes]))[0].max() +1
                 if current_plane_index == last_pupil_plane_index:
                     wavefront.normalize()
                     _log.debug("normalizing at exit pupil (plane {0}) to 1.0 total intensity".format(current_plane_index))
@@ -1373,7 +1440,7 @@ class OpticalSystem(object):
             utils.fftw_load_wisdom()
 
         if conf.use_multiprocessing and len(wavelength) > 1: ######### Parallellized computation ############
-            # Avoid a Mac OS incompatibility that can lead to hard-to-reproduce crashes. 
+            # Avoid a Mac OS incompatibility that can lead to hard-to-reproduce crashes.
             import sys
             import platform
             if ( (sys.version_info < (3,4,0)) and platform.system()=='Darwin' and
@@ -1402,13 +1469,14 @@ class OpticalSystem(object):
             # This is a memory-intensive task so that can end up swapping to disk and thrashing IO
             nproc = conf.n_processes if conf.n_processes > 1 \
                                      else utils.estimate_optimal_nprocesses(self, nwavelengths=len(wavelength))
+            nproc = min(nproc, len(wavelength)) # never try more processes than wavelengths. 
             # be sure to cast nproc to int below; will fail if given a float even if of integer value
 
-            if ((sys.version_info.major+sys.version_info.minor*0.1) < 3.4):
+            if sys.version_info < (3, 4, 0):
                 pool = multiprocessing.Pool(int(nproc))
             else:
-                # Use new forkserver for more robustness; 
-                # Resolves https://github.com/mperrin/poppy/issues/23 ?
+                # Use new forkserver for more robustness;
+                # Resolves https://github.com/mperrin/poppy/issues/23 
                 ctx = multiprocessing.get_context('forkserver')
                 pool =ctx.Pool(int(nproc))
 
@@ -1423,15 +1491,19 @@ class OpticalSystem(object):
             # Sum all the results up into one array, using the weights
             outFITS, intermediate_wfs = results[0]
             outFITS[0].data *= normwts[0]
-            _log.info("got results for wavelength channel %d / %d" % (0, len(tuple(wavelength))) )
+            for idx, wavefront in enumerate(intermediate_wfs):
+                 intermediate_wfs[idx] *= normwts[0]
+            _log.info("got results for wavelength channel {} / {} ({:g} meters)".format(
+                0, len(tuple(wavelength)), wavelength[0]) )
             for i in range(1, len(normwts)):
                 mono_psf, mono_intermediate_wfs = results[i]
                 wave_weight = normwts[i]
-                _log.info("got results for wavelength channel %d / %d" % (i, len(tuple(wavelength))) )
+                _log.info("got results for wavelength channel {} / {} ({:g} meters)".format(
+                    i, len(tuple(wavelength)), wavelength[i]) )
                 outFITS[0].data += mono_psf[0].data * wave_weight
                 for idx, wavefront in enumerate(mono_intermediate_wfs):
                     intermediate_wfs[idx] += wavefront * wave_weight
-            outFITS[0].header.add_history("Multiwavelength PSF calc on %d processors completed." % conf.n_processes)
+            outFITS[0].header.add_history("Multiwavelength PSF calc using {} processes completed.".format(nproc) )
 
         else:  ########## single-threaded computations (may still use multi cores if FFTW enabled ######
             if display:
@@ -1459,7 +1531,7 @@ class OpticalSystem(object):
 
             if display:
                 # Add final intensity panel to intermediate WF plot
-                cmap = matplotlib.cm.jet
+                cmap = getattr(matplotlib.cm, conf.cmap_sequential)
                 cmap.set_bad('0.3')
                 #cmap.set_bad('k', 0.8)
                 halffov_x =outFITS[0].header['PIXELSCL']*outFITS[0].data.shape[1]/2
@@ -1469,7 +1541,8 @@ class OpticalSystem(object):
                 norm=matplotlib.colors.LogNorm(vmin=1e-8,vmax=1e-1)
                 plt.xlabel(unit)
 
-                utils.imshow_with_mouseover(outFITS[0].data, extent=extent, norm=norm, cmap=cmap)
+                utils.imshow_with_mouseover(outFITS[0].data, extent=extent, norm=norm, cmap=cmap,
+                                            origin='lower')
 
         if save_intermediates:
             _log.info('Saving intermediate wavefronts:')
@@ -1520,7 +1593,6 @@ class OpticalSystem(object):
             _log.info("Displaying plane {0:s} in row {1:d} of {2:d}".format(plane.name, i+1, nplanes))
             plane.display(nrows=nplanes, row=i+1, **kwargs)
 
-
     def _propagation_info(self):
         """ Provide some summary information on the optical propagation calculations that
         would be done for a given optical system
@@ -1546,6 +1618,13 @@ class OpticalSystem(object):
 
         return {'steps': steps, 'output_shape': output_shape, 'output_size':output_size}
 
+    # PEP8 compliant aliases; the old versions will be deprecated in a future release.
+    add_pupil = addPupil
+    add_image = addImage
+    add_rotation = addRotation
+    add_detector = addDetector
+    input_wavefront = inputWavefront
+    calc_psf = calcPSF
 
 class SemiAnalyticCoronagraph(OpticalSystem):
     """ A subclass of OpticalSystem that implements a specialized propagation
@@ -1590,6 +1669,9 @@ class SemiAnalyticCoronagraph(OpticalSystem):
         self.source_offset_r = ExistingOpticalSystem.source_offset_r
         self.source_offset_theta = ExistingOpticalSystem.source_offset_theta
         self.planes = ExistingOpticalSystem.planes
+        self.npix = ExistingOpticalSystem.npix
+        self.pupil_diameter = ExistingOpticalSystem.pupil_diameter
+
 
         # SemiAnalyticCoronagraphs have some fixed planes, so give them reasonable names.
         self.inputpupil = self.planes[0]
@@ -1733,6 +1815,162 @@ class SemiAnalyticCoronagraph(OpticalSystem):
 
         return wavefront_combined.asFITS(), intermediate_wfs
 
+class MatrixFTCoronagraph(OpticalSystem):
+    """ A subclass of OpticalSystem that implements a specialized propagation
+    algorithm for coronagraphs which are most efficiently modeled by 
+    matrix Fourier transforms, and in which the semi-analytical/Babinet 
+    superposition approach does not apply.
+
+    The way to use this class is to build an OpticalSystem class the usual way, and then
+    cast it to a MatrixFTCoronagraph, and then you can just call calcPSF on that in the
+    usual fashion.
+
+    Parameters
+    -----------
+    ExistingOpticalSystem : OpticalSystem
+        An optical system which can be converted into a SemiAnalyticCoronagraph. This
+        means it must have exactly 4 planes, in order Pupil, Image, Pupil, Detector.
+    oversample : int
+        Oversampling factor in intermediate image plane. Default is 4
+    occulter_box : float
+        half size of field of view region entirely including the occulter, in arcseconds. Default 1.0
+        This can be a tuple or list to specify a rectangular region [deltaY,deltaX] if desired.
+
+
+    Notes
+    ------
+
+    This subclass is best suited for a coronagraph design in which the region
+    transmitted by the focal plane mask is bounded and small, thereby offering a
+    large speed gain over FFT propagation. In particular, the shaped pupil Lyot
+    coronagraphs in the baseline WFIRST CGI design, which use a diaphragm-type
+    focal plane mask, can benefit highly.
+
+    """
+
+    def __init__(self, ExistingOpticalSystem, oversample=4, occulter_box = 1.0):
+        from . import optics
+
+        if len(ExistingOpticalSystem.planes) < 4:
+            raise ValueError("Input optical system must have at least 4 planes to be convertible into a MatrixFTCoronagraph")
+        self.name = "MatrixFTCoronagraph for "+ExistingOpticalSystem.name
+        self.verbose = ExistingOpticalSystem.verbose
+        self.source_offset_r = ExistingOpticalSystem.source_offset_r
+        self.source_offset_theta = ExistingOpticalSystem.source_offset_theta
+        self.planes = ExistingOpticalSystem.planes
+        self.npix = ExistingOpticalSystem.npix
+        self.pupil_diameter = ExistingOpticalSystem.pupil_diameter
+
+
+        self.oversample = oversample
+
+        #if hasattr(occulter_box, '__getitem__'):
+        if not np.isscalar(occulter_box):
+            occulter_box = np.array(occulter_box) # cast to numpy array so the multiplication by 2 just below will work
+        self.occulter_box = occulter_box
+
+    def propagate_mono(self, wavelength=1e-6, normalize='first',
+                       retain_intermediates=False, display_intermediates=False):
+        """Propagate a monochromatic wavefront through the optical system using matrix FTs. Called from
+        within `calcPSF`. Returns a tuple with a `fits.HDUList` object and a list of intermediate `Wavefront`s
+        (empty if `retain_intermediates=False`).
+
+        We use the Detector subclass of OpticalElement as the destination in the first
+        pupil-to-image propagation, to force the propagation method to switch to the
+        matrix FT. Otherwise it would default to FFT.
+
+        Parameters
+        ----------
+        wavelength : float
+            Wavelength in meters
+        normalize : string, {'first', 'last'}
+            how to normalize the wavefront?
+            * 'first' = set total flux = 1 after the first optic, presumably a pupil
+            * 'last' = set total flux = 1 after the entire optical system.
+        display_intermediates : bool
+            Should intermediate steps in the calculation be displayed on screen? Default: False.
+        retain_intermediates : bool
+            Should intermediate steps in the calculation be retained? Default: False.
+            If True, the second return value of the method will be a list of `poppy.Wavefront` objects
+            representing intermediate optical planes from the calculation.
+
+        Returns
+        -------
+        final_wf : fits.HDUList
+            The final result of the monochromatic propagation as a FITS HDUList
+        intermediate_wfs : list
+            A list of `poppy.Wavefront` objects representing the wavefront at intermediate optical planes.
+            The 0th item is "before first optical plane", 1st is "after first plane and before second plane", and so on.
+            (n.b. This will be empty if `retain_intermediates` is False.)
+        """
+
+        if conf.enable_speed_tests:
+           t_start = time.time()
+        if self.verbose:
+           _log.info(" Propagating wavelength = {0:g} meters using "
+                     "Matrix FTs".format(wavelength))
+        wavefront = self.inputWavefront(wavelength)
+
+        intermediate_wfs = []
+
+        # note: 0 is 'before first optical plane; 1 = 'after first plane and before second plane' and so on
+        current_plane_index = 0
+        for optic in self.planes:
+            # The actual propagation:
+            if optic.planetype == _IMAGE:
+                if len(optic.amplitude.shape) == 2: # Match detector object to the loaded FPM transmission array
+                    metadet = Detector(optic.pixelscale, fov_pixels = optic.amplitude.shape[0], name='Oversampled Occulter Plane')
+                else:
+                    metadet_pixelscale = wavelength / self.planes[0].pupil_diam * _RADIANStoARCSEC / self.oversample / 2
+                    metadet = Detector(metadet_pixelscale, fov_arcsec = self.occulter_box*2, name='Oversampled Occulter Plane')
+                wavefront.propagateTo(metadet)
+            else:
+                wavefront.propagateTo(optic)
+            wavefront *= optic
+            current_plane_index += 1
+
+            # Normalize if appropriate:
+            if normalize.lower()=='first' and current_plane_index==1 :  # set entrance plane to 1.
+                wavefront.normalize()
+                _log.debug("normalizing at first plane (entrance pupil) to 1.0 total intensity")
+            elif normalize.lower()=='first=2' and current_plane_index==1 : # this undocumented option is present only for testing/validation purposes
+                wavefront.normalize()
+                wavefront *= np.sqrt(2)
+            elif normalize.lower()=='exit_pupil': # normalize the last pupil in the system to 1
+                last_pupil_plane_index = np.where(np.asarray([p.planetype is PlaneType.pupil for p in self.planes]))[0].max() +1
+                if current_plane_index == last_pupil_plane_index:
+                    wavefront.normalize()
+                    _log.debug("normalizing at exit pupil (plane {0}) to 1.0 total intensity".format(current_plane_index))
+            elif normalize.lower()=='last' and current_plane_index==len(self.planes):
+                wavefront.normalize()
+                _log.debug("normalizing at last plane to 1.0 total intensity")
+
+            # Optional outputs:
+            if conf.enable_flux_tests: _log.debug("  Flux === "+str(wavefront.totalIntensity))
+
+            if retain_intermediates: # save intermediate wavefront, summed for polychromatic if needed
+                intermediate_wfs.append(wavefront.copy())
+
+            if display_intermediates:
+                if conf.enable_speed_tests: t0 = time.time()
+                title = None if current_plane_index > 1 else "propagating $\lambda=$ %.3f $\mu$m" % (wavelength*1e6)
+                wavefront.display(what='best',nrows=len(self.planes),row=current_plane_index, colorbar=False, title=title)
+                #plt.title("propagating $\lambda=$ %.3f $\mu$m" % (wavelength*1e6))
+
+                if conf.enable_speed_tests:
+                    t1 = time.time()
+                    _log.debug("\tTIME %f s\t for displaying the wavefront." % (t1-t0))
+
+        # prepare output arrays
+        if normalize.lower()=='last':
+                wavefront.normalize()
+
+        if conf.enable_speed_tests:
+            t_stop = time.time()
+            _log.debug("\tTIME %f s\tfor propagating one wavelength" % (t_stop-t_start))
+
+        return wavefront.asFITS(), intermediate_wfs
+
 
 #------ core Optical Element Classes ------
 class OpticalElement(object):
@@ -1773,7 +2011,7 @@ class OpticalElement(object):
     #"float attribute. Pixelscale in arcsec or meters per pixel. Will be 'None' for null or analytic optics."
 
 
-    def __init__(self, name="unnamed optic", verbose=True, planetype=None, oversample=1, opdunits="meters",interp_order=3):
+    def __init__(self, name="unnamed optic", verbose=True, planetype=PlaneType.unspecified, oversample=1, opdunits="meters",interp_order=3):
 
         self.name = name
         """ string. Descriptive Name of this optic"""
@@ -1824,6 +2062,7 @@ class OpticalElement(object):
                 resampled_opd = scipy.ndimage.interpolation.zoom(self.opd,zoom,output=self.opd.dtype,order=self.interp_order)
                 resampled_amplitude = scipy.ndimage.interpolation.zoom(self.amplitude,zoom,output=self.amplitude.dtype,order=self.interp_order)
                 _log.debug("resampled optic to match wavefront via spline interpolation by a zoom factor of %.3g"%(zoom))
+                _log.debug("resampled optic shape: {}   wavefront shape: {}".format(resampled_amplitude.shape, wave.shape))
 
                 lx,ly=resampled_amplitude.shape
                 #crop down to match size of wavefront:
@@ -1865,17 +2104,19 @@ class OpticalElement(object):
         else:
             return self.phasor
 
-    def display(self, nrows=1, row=1, what='intensity', crosshairs=True, ax=None, colorbar=True, colorbar_orientation=None, title=None, opd_vmax=0.5e-6):
+    def display(self, nrows=1, row=1, what='intensity', crosshairs=True, ax=None, colorbar=True,
+                colorbar_orientation=None, title=None, opd_vmax=0.5e-6):
         """Display plots showing an optic's transmission and OPD.
 
         Parameters
         ----------
         what : str
-            What to display: 'intensity', 'amplitude', 'phase', or 'both' (meaning intensity + phase)
+            What to display: 'intensity', 'amplitude', 'phase',
+            or 'both' (meaning intensity and phase in two subplots)
         ax : matplotlib.Axes instance
             Axes to display into
         nrows, row : integers
-            # of rows and row index for subplot display
+            number of rows and row index for subplot display
         crosshairs : bool
             Display crosshairs indicating the center?
         colorbar : bool
@@ -1884,69 +2125,70 @@ class OpticalElement(object):
             Desired orientation, horizontal or vertical?
             Default is horizontal if only 1 row of plots, else vertical
         opd_vmax : float
-            Max value for OPD image display, in meters.
+            Max absolute value for OPD image display, in meters.
         title : string
             Plot label
-
-
         """
         if colorbar_orientation is None:
-            colorbar_orientation= "horizontal" if nrows == 1 else 'vertical'
+            colorbar_orientation = "horizontal" if nrows == 1 else 'vertical'
 
-        _log.debug('colorbar_orientation = '+colorbar_orientation)
-        cmap_amp = matplotlib.cm.gray
+        if self.planetype is _PUPIL:
+            cmap_amp = getattr(matplotlib.cm, conf.cmap_pupil_intensity)
+        else:
+            cmap_amp = getattr(matplotlib.cm, conf.cmap_sequential)
         cmap_amp.set_bad('0.0')
-        cmap_opd = matplotlib.cm.jet
+        cmap_opd = getattr(matplotlib.cm, conf.cmap_diverging)
         cmap_opd.set_bad('0.3')
-        norm_amp=matplotlib.colors.Normalize(vmin=0, vmax=1)
-        norm_opd=matplotlib.colors.Normalize(vmin=-opd_vmax, vmax=opd_vmax)
+        norm_amp = matplotlib.colors.Normalize(vmin=0, vmax=1)
+        norm_opd = matplotlib.colors.Normalize(vmin=-opd_vmax, vmax=opd_vmax)
 
         units = "[meters]" if self.planetype == _PUPIL else "[arcsec]"
-        if nrows > 1: units = self.name+"\n"+units
-
+        if nrows > 1:
+            units = self.name + "\n" + units
 
         if self.pixelscale is not None:
-            halfsize = self.pixelscale*self.amplitude.shape[0]/2
+            halfsize = self.pixelscale * self.amplitude.shape[0] / 2
             _log.debug("Display pixel scale = %.3f " % self.pixelscale)
         else:
             _log.debug("No defined pixel scale - this must be an analytic optic")
-            halfsize=1.0
+            halfsize = 1.0
         extent = [-halfsize, halfsize, -halfsize, halfsize]
 
-
-        #ampl = np.ma.masked_equal(self.amplitude, 0)
         ampl = self.amplitude
-        #opd= np.ma.masked_array(self.opd, mask=(self.amplitude ==0))
         opd = self.opd.copy()
-        opd[np.where(self.amplitude ==0)] = np.nan
+        opd[np.where(self.amplitude == 0)] = np.nan
 
-        if what =='both':
+        if what == 'both':
             # recursion!
             if ax is None:
-                ax = plt.subplot(nrows, 2, row*2-1)
-            self.display(what='intensity', ax=ax, crosshairs=crosshairs, colorbar=colorbar, nrows=nrows)
-            ax2 = plt.subplot(nrows, 2, row*2)
-            self.display(what='phase', ax=ax2, crosshairs=crosshairs, colorbar=colorbar, nrows=nrows)
-            return (ax,ax2)
-        elif what=='amplitude':
+                ax = plt.subplot(nrows, 2, row * 2 - 1)
+            self.display(what='intensity', ax=ax, crosshairs=crosshairs, colorbar=colorbar,
+                         colorbar_orientation=colorbar_orientation, title=None, opd_vmax=opd_vmax,
+                         nrows=nrows)
+            ax2 = plt.subplot(nrows, 2, row * 2)
+            self.display(what='phase', ax=ax2, crosshairs=crosshairs, colorbar=colorbar,
+                         colorbar_orientation=colorbar_orientation, title=None, opd_vmax=opd_vmax,
+                         nrows=nrows)
+            return ax, ax2
+        elif what == 'amplitude':
             plot_array = ampl
             title = 'Transmissivity'
             cb_label = 'Fraction'
-            cb_values = [0,0.25, 0.5, 0.75, 1.0]
+            cb_values = [0, 0.25, 0.5, 0.75, 1.0]
             cmap = cmap_amp
             norm = norm_amp
-        elif what=='intensity':
-            plot_array = ampl**2
+        elif what == 'intensity':
+            plot_array = ampl ** 2
             title = "Transmittance"
             cb_label = 'Fraction'
-            cb_values = [0,0.25, 0.5, 0.75, 1.0]
+            cb_values = [0, 0.25, 0.5, 0.75, 1.0]
             cmap = cmap_amp
             norm = norm_amp
         elif what =='phase':  # FIXME this is not really phase, it's OPD!
             plot_array = opd
             title = "OPD"
             cb_label = 'meters'
-            cb_values = np.array([-1, -0.5, 0, 0.5, 1])*opd_vmax
+            cb_values = np.array([-1, -0.5, 0, 0.5, 1]) * opd_vmax
             cmap = cmap_opd
             norm = norm_opd
         else:
@@ -1955,11 +2197,13 @@ class OpticalElement(object):
         # now we plot whichever was chosen...
         if ax is None:
             if nrows > 1:
-                ax = plt.subplot(nrows, 2, row*2-1)
-            else: ax = plt.subplot(111)
-        utils.imshow_with_mouseover(plot_array, ax=ax, extent=extent, cmap=cmap, norm=norm)
+                ax = plt.subplot(nrows, 2, row * 2 - 1)
+            else:
+                ax = plt.subplot(111)
+        utils.imshow_with_mouseover(plot_array, ax=ax, extent=extent, cmap=cmap, norm=norm,
+                                    origin='lower')
         if nrows == 1:
-            plt.title(title+" for "+self.name)
+            plt.title(title + " for " + self.name)
         plt.ylabel(units)
         ax.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(nbins=4, integer=True))
         ax.yaxis.set_major_locator(matplotlib.ticker.MaxNLocator(nbins=4, integer=True))
@@ -1967,14 +2211,14 @@ class OpticalElement(object):
             cb = plt.colorbar(ax.images[0], orientation=colorbar_orientation, ticks=cb_values)
             cb.set_label(cb_label)
         if crosshairs:
-            ax.axhline(0,ls=":", color='k')
-            ax.axvline(0,ls=":", color='k')
+            ax.axhline(0, ls=":", color='k')
+            ax.axvline(0, ls=":", color='k')
         return ax
 
     def __str__(self):
-        if self.planetype is _PUPIL:
+        if self.planetype == _PUPIL:
             return "Pupil plane: %s " % (self.name)
-        elif self.planetype is _IMAGE:
+        elif self.planetype == _IMAGE:
             desc = "(%dx%d pixels, scale=%f arcsec/pixel)" % (self.shape[0], self.shape[0], self.pixelscale) if self.pixelscale is not None else "(Analytic)"
             return "Image plane: %s %s" % (self.name, desc)
         else:
@@ -2055,7 +2299,7 @@ class FITSOpticalElement(OpticalElement):
 
     """
 
-    def __init__(self, name="unnamed optic", transmission=None, opd= None, opdunits="meters",
+    def __init__(self, name="unnamed optic", transmission=None, opd=None, opdunits=None,
             shift=None, rotation=None, pixelscale=None, planetype=None,
             transmission_index=None, opd_index=None,
             **kwargs):
@@ -2156,8 +2400,6 @@ class FITSOpticalElement(OpticalElement):
                 _log.info("No info supplied on amplitude transmission; assuming uniform throughput = 1")
                 self.amplitude = np.ones(self.opd.shape)
 
-            # convert OPD into meters
-
             if opdunits is None:
                 try:
                     opdunits = self.opd_header['BUNIT']
@@ -2165,16 +2407,18 @@ class FITSOpticalElement(OpticalElement):
                     _log.error("No opdunit keyword supplied, and BUNIT keyword not found in header. Cannot determine OPD units")
                     raise Exception("No opdunit keyword supplied, and BUNIT keyword not found in header. Cannot determine OPD units.")
 
+            # normalize and drop any trailing 's'
+            opdunits = opdunits.lower()
+            if opdunits.endswith('s'):
+                opdunits = opdunits[:-1]
 
-            if opdunits.lower().endswith('s'): opdunits = opdunits[:-1] # drop trailing s if present
-            if opdunits.lower() == 'meter' or opdunits.lower() == 'm':
-                pass # no need to rescale
-            elif opdunits.lower() == 'micron' or opdunits.lower() == 'um' or opdunits.lower() == 'micrometer':
+            # rescale OPD to meters if necessary
+            if opdunits in ('meter', 'm'):
+                pass
+            elif opdunits in ('micron', 'um', 'micrometer'):
                 self.opd *= 1e-6
-            elif opdunits.lower() == 'nanometer' or opdunits.lower() == 'nm':
+            elif opdunits in ('nanometer', 'nm'):
                 self.opd *= 1e-9
-
-
 
             if len (self.opd.shape) != 2 or self.opd.shape[0] != self.opd.shape[1]:
                 _log.debug('OPD shape: '+str(self.opd.shape))

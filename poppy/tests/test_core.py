@@ -1,11 +1,16 @@
-#Test functions for core poppy functionality
-
-from .. import poppy_core 
-from .. import optics
+# Test functions for core poppy functionality
+import os
 
 import numpy as np
-import astropy.io.fits as fits
+from astropy.io import fits
+import pytest
+try:
+    import scipy
+except ImportError:
+    scipy = None
 
+from .. import poppy_core
+from .. import optics
 
 ####### Test Common Infrastructre #######
 
@@ -96,6 +101,56 @@ def test_basic_functionality():
     psf = osys.calcPSF(wavelength=1.0e-6)
     # we need to be a little careful here due to floating point math comparision equality issues... Can't just do a strict equality
     assert abs(psf[0].data.max() - 0.201) < 0.001
+
+
+
+def test_input_wavefront_size():
+
+    # if absolutely nothing is set then the default is 1024. 
+    # the oversample parameter multiplies that *only* if padding
+    # is applied during an FFT propagation; by default there's no effect
+    # in the unpadded array.
+    for oversamp in (1,2,4):
+        osys = poppy_core.OpticalSystem("test", oversample=oversamp)
+        #pupil = optics.CircularAperture(radius=1)
+        wf = osys.inputWavefront()
+        expected_shape = (1024,1024) if (wf.ispadded == False) else (1024*oversamp, 1024*oversamp)
+        assert wf.shape == expected_shape, 'Wavefront is not the expected size: is {} expects {}'.format(wf.shape,  expected_shape)
+
+
+    # test setting the size based on the npix parameter, with null optical system
+    for size in [512, 1024, 2001]:
+        osys = poppy_core.OpticalSystem("test", oversample=1, npix=size)
+        #pupil = optics.CircularAperture(radius=1)
+        wf = osys.inputWavefront()
+        expected_shape = (size,size)
+        assert wf.shape == expected_shape, 'Wavefront is not the expected size: is {} expects {}'.format(wf.shape,  expected_shape)
+
+    # test setting the size based on the npix parameter, with a non-null optical system
+    for size in [512, 1024, 2001]:
+        osys = poppy_core.OpticalSystem("test", oversample=1, npix=size)
+        osys.add_pupil(optics.CircularAperture(radius=1))
+        wf = osys.inputWavefront()
+        expected_shape = (size,size)
+        assert wf.shape == expected_shape, 'Wavefront is not the expected size: is {} expects {}'.format(wf.shape,  expected_shape)
+
+
+    # test setting the size based on an input optical element
+    for npix in [512, 1024, 2001]:
+        osys = poppy_core.OpticalSystem("test", oversample=1)
+        pupil = optics.CircularAperture(radius=1)
+        pupil_fits = pupil.toFITS(npix=npix)
+        osys.add_pupil(transmission=pupil_fits)
+
+        wf = osys.inputWavefront()
+        expected_shape = (npix,npix)
+        assert pupil_fits[0].data.shape == expected_shape, 'FITS array from optic element is not the expected size: is {} expects {}'.format(pupil_fits[0].data.shape,  expected_shape)
+        assert wf.shape == expected_shape, 'Wavefront is not the expected size: is {} expects {}'.format(wf.shape,  expected_shape)
+
+
+
+
+
 
 
 def test_CircularAperture_Airy(display=False):
@@ -301,7 +356,7 @@ def test_inverse_MFT():
 
     fov_arcsec  = 5.0
 
-    test_ap = optics.ParityTestAperture(radius=6.5/2)
+    test_ap = optics.ParityTestAperture(radius=6.5/2, pad_factor=1.5)
 
     osys = poppy_core.OpticalSystem("test", oversample=4)
     osys.addPupil(test_ap)
@@ -319,14 +374,10 @@ def test_inverse_MFT():
     assert(   np.abs(psf1[0].data - psf[0].data).max()  < 1e-7 )
 
 
-import pytest
-
-try:
-    import scipy
-    HAS_SCIPY = True
-except ImportError:
-    HAS_SCIPY = False
-@pytest.mark.skipif('not HAS_SCIPY')
+@pytest.mark.skipif(
+    (scipy is None),
+    reason='No SciPy installed'
+)
 def test_optic_resizing():
     '''
     Tests the rescaling functionality of OpticalElement.getPhasor(),
@@ -334,17 +385,32 @@ def test_optic_resizing():
     creating an optic with a large pixel scale, and checking the returned
     phasor of each has the dimensions of the input wavefront.
     '''
-    osys = poppy_core.OpticalSystem("test", oversample=1)
+
+    # diameter 1 meter, pixel scale 2 mm
+    inputwf = poppy_core.Wavefront(diam=1.0, npix=500)
+
+    # Test rescaling from finer scales: diameter 1 meter, pixel scale 1 mm 
     test_optic_small=fits.HDUList([fits.PrimaryHDU(np.zeros([1000,1000]))])
-    test_optic_small[0].header["PIXSCALE"]=.001
-
+    test_optic_small[0].header["PUPLSCAL"]=.001
     test_optic_small_element=poppy_core.FITSOpticalElement(transmission=test_optic_small)
+    assert(test_optic_small_element.getPhasor(inputwf).shape ==inputwf.shape )
 
-    test_optic_large=fits.HDUList([fits.PrimaryHDU(np.zeros([1000,1000]))])
-    test_optic_large[0].header["PIXSCALE"]=.1
+    # Test rescaling from coarser scales: diameter 1 meter, pixel scale 10 mm
+    test_optic_large=fits.HDUList([fits.PrimaryHDU(np.zeros([100,100]))])
+    test_optic_large[0].header["PUPLSCAL"]=.01
     test_optic_large_element=poppy_core.FITSOpticalElement(transmission=test_optic_large)
+    assert(test_optic_large_element.getPhasor(inputwf).shape ==inputwf.shape )
 
-    osys.addPupil(optics.CircularAperture(radius=3.25))
-    assert(test_optic_small_element.getPhasor(osys.inputWavefront()).shape ==osys.inputWavefront().shape )
-    assert(test_optic_large_element.getPhasor(osys.inputWavefront()).shape ==osys.inputWavefront().shape )
+    # Test rescaling where we have to pad with extra zeros: 
+    # diameter 0.8 mm, pixel scale 1 mm
+    test_optic_pad=fits.HDUList([fits.PrimaryHDU(np.zeros([800,800]))])
+    test_optic_pad[0].header["PUPLSCAL"]=.001
+    test_optic_pad_element=poppy_core.FITSOpticalElement(transmission=test_optic_pad)
+    assert(test_optic_pad_element.getPhasor(inputwf).shape ==inputwf.shape )
 
+    # Test rescaling where we have to trim to a smaller size:
+    # diameter 1.2 mm, pixel scale 1 mm
+    test_optic_crop=fits.HDUList([fits.PrimaryHDU(np.zeros([1200,1200]))])
+    test_optic_crop[0].header["PUPLSCAL"]=.001
+    test_optic_crop_element=poppy_core.FITSOpticalElement(transmission=test_optic_crop)
+    assert(test_optic_crop_element.getPhasor(inputwf).shape ==inputwf.shape )

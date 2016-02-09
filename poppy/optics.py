@@ -8,6 +8,7 @@ import astropy.io.fits as fits
 
 from . import utils
 from . import geometry
+from .version import version
 
 import logging
 import collections
@@ -15,24 +16,28 @@ import collections
 _log = logging.getLogger('poppy')
 
 from poppy import zernike
-from .poppy_core import OpticalElement, Wavefront, _PUPIL, _IMAGE, _RADIANStoARCSEC
+from .poppy_core import OpticalElement, Wavefront, PlaneType, _PUPIL, _IMAGE, _RADIANStoARCSEC
 
 __all__ = ['AnalyticOpticalElement', 'ScalarTransmission', 'InverseTransmission',
            'BandLimitedCoron', 'IdealFQPM', 'RectangularFieldStop', 'SquareFieldStop',
+           'AnnularFieldStop',
            'CircularOcculter', 'BarOcculter', 'FQPM_FFT_aligner',  'CircularAperture',
            'HexagonAperture', 'MultiHexagonAperture', 'NgonAperture', 'RectangleAperture',
            'SquareAperture', 'SecondaryObscuration', 'AsymmetricSecondaryObscuration',
-           'ThinLens', 'CompoundAnalyticOptic']
+           'ThinLens', 'GaussianAperture', 'CompoundAnalyticOptic']
 
 # ------ Generic Analytic elements -----
 
 class AnalyticOpticalElement(OpticalElement):
-    """ Defines an abstract analytic optical element, i.e. one definable by some formula rather than
-        by an input OPD or pupil file.
+    """ Defines an abstract analytic optical element, i.e. one definable by some
+        formula rather than by an input OPD or pupil file.
 
-        This class is useless on its own; instead use its various subclasses that implement
-        appropriate getPhasor functions. It exists mostly to provide some behaviors &
-        initialization common to all analytic optical elements.
+        This class is useless on its own; instead use its various subclasses
+        that implement appropriate getPhasor functions. It exists mostly to
+        provide some behaviors & initialization common to all analytic optical
+        elements.
+
+
 
         Parameters
         ----------
@@ -41,12 +46,23 @@ class AnalyticOpticalElement(OpticalElement):
         transmission, opd : string
             These are *not allowed* for Analytic optical elements, and this class will raise an
             error if you try to set one.
-
+        shift_x, shift_y : Optional floats
+            Translations of this optic, given in meters relative to the optical
+            axis.
+        rotation : Optional float
+            Rotation of the optic around its center, given in degrees
+            counterclockwise.  Note that if you apply both shift and rotation,
+            the optic rotates around its own center, rather than the optical
+            axis.
 
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, shift_x=None, shift_y=None, rotation=None, **kwargs):
         OpticalElement.__init__(self, **kwargs)
+
+        if shift_x is not None: self.shift_x = shift_x
+        if shift_y is not None: self.shift_y = shift_y
+        if rotation is not None: self.rotation = rotation
 
         #self.shape = None  # no explicit shape required
         self.pixelscale = None
@@ -56,9 +72,9 @@ class AnalyticOpticalElement(OpticalElement):
         return None
 
     def __str__(self):
-        if self.planetype is _PUPIL:
+        if self.planetype == _PUPIL:
             return "Pupil plane: %s (Analytic)" % (self.name)
-        elif self.planetype is _IMAGE:
+        elif self.planetype == _IMAGE:
             return "Image plane: %s (Analytic)" % (self.name)
         else:
             return "Optic: " + self.name
@@ -92,7 +108,7 @@ class AnalyticOpticalElement(OpticalElement):
             if True, will return a tuple containing the desired array and a float giving the
             pixel scale.
         """
-        if self.planetype is _PUPIL:
+        if self.planetype != _IMAGE:
             if grid_size is not None:
                 diam = grid_size
             elif hasattr(self, 'pupil_diam'):
@@ -142,7 +158,7 @@ class AnalyticOpticalElement(OpticalElement):
             return output_array
 
 
-    def display(self, nrows=1, row=1, wavelength=2e-6, npix=512, **kwargs):
+    def display(self, nrows=1, row=1, wavelength=2e-6, npix=512, grid_size=None, **kwargs):
         """Display an Analytic optic by first computing it onto a grid...
 
         Parameters
@@ -151,7 +167,9 @@ class AnalyticOpticalElement(OpticalElement):
             Wavelength to evaluate this optic's properties at
         npix : int
             Number of pixels to use when sampling the analytic optical element.
-
+        grid_size : float
+            Diameter of the grid on which to sample this optic in
+            meters (for pupil planes) or arcseconds (for image planes)
         what : str
             What to display: 'intensity', 'surface' or 'phase', or 'both'
         ax : matplotlib.Axes instance
@@ -169,13 +187,11 @@ class AnalyticOpticalElement(OpticalElement):
             Max value for OPD image display, in meters.
         title : string
             Plot label
-
-
         """
 
         _log.debug("Displaying " + self.name)
         phasor, pixelscale = self.sample(wavelength=wavelength, npix=npix, what='complex',
-                                         return_scale=True)
+                                         grid_size=grid_size, return_scale=True)
 
         # temporarily set attributes appropriately as if this were a regular OpticalElement
         self.amplitude = np.abs(phasor)
@@ -219,10 +235,23 @@ class AnalyticOpticalElement(OpticalElement):
         output_array, pixelscale = self.sample(wavelength=wavelength, npix=npix, what=what,
                                                **kwargs)
         phdu = fits.PrimaryHDU(output_array)
-        phdu.header['OPTIC'] = self.name
+        phdu.header['OPTIC'] = (self.name, "Descriptive name of this optic")
+        phdu.header['NAME'] = self.name
         phdu.header['SOURCE'] = 'Computed with POPPY'
+        phdu.header['VERSION'] = (version, "software version of POPPY")
         phdu.header['CONTENTS'] = what
-        phdu.header['PIXSCALE'] = pixelscale
+        phdu.header['PLANETYP'] = (self.planetype.value, "1=pupil, 2=image, 3=detector, 4=rot")
+        if self.planetype==_IMAGE:
+            phdu.header['PIXSCALE'] = (pixelscale, 'Image plane pixel scale in arcsec/pix')
+        else:
+            phdu.header['PUPLSCAL'] = (pixelscale, 'Pupil plane pixel scale in meter/pix')
+
+
+
+        if hasattr(self, 'shift_x'):  phdu.header['SHIFTX'] = (self.shift_x, "X axis shift of input optic")
+        if hasattr(self, 'shift_y'):  phdu.header['SHIFTY'] = (self.shift_y, "Y axis shift of input optic")
+        if hasattr(self, 'rotation'): phdu.header['ROTATION'] = (self.rotation, "Rotation of input optic, in deg")
+
 
         hdul = fits.HDUList(hdus=[phdu])
 
@@ -233,11 +262,11 @@ class AnalyticOpticalElement(OpticalElement):
         return hdul
 
     def get_coordinates(self, wave):
-        """ Get coordinates of this optic, optionally including shifts
+        """Get coordinates of this optic, optionally including shifts
 
         Method: Calls the supplied wave object's coordinates() method,
         then checks for the existence of the following attributes:
-            "shift_x", "shift_y", "rotation"
+        "shift_x", "shift_y", "rotation"
         If any of them are present, then the coordinates are modified accordingly.
 
         Shifts are given in meters for pupil optics and arcseconds for image
@@ -259,8 +288,8 @@ class AnalyticOpticalElement(OpticalElement):
 
         return y,x
 
-
-
+    #PEP8 compliant aliases; the old names will later be deprecated
+    to_fits = toFITS
 
 class ScalarTransmission(AnalyticOpticalElement):
     """ Uniform transmission between 0 and 1.0 in intensity.
@@ -306,9 +335,19 @@ class InverseTransmission(OpticalElement):
         return 1 - self.uninverted_optic.getPhasor(wave)
 
 
-#------ Analytic Image Plane elements -----
+#------ Analytic Image Plane elements (coordinates in arcsec) -----
 
-class BandLimitedCoron(AnalyticOpticalElement):
+class AnalyticImagePlaneElement(AnalyticOpticalElement):
+    """ Parent virtual class for AnalyticOptics which are
+    dimensioned in angular units such as arcseconds, rather
+    than physical length units such as meters.
+    """
+    def __init__(self, name='Generic image plane optic', *args, **kwargs):
+        AnalyticOpticalElement.__init__(self, name=name, planetype=_IMAGE, *args, **kwargs)
+
+
+
+class BandLimitedCoron(AnalyticImagePlaneElement):
     """ Defines an ideal band limited coronagraph occulting mask.
 
 
@@ -328,13 +367,20 @@ class BandLimitedCoron(AnalyticOpticalElement):
             Wavelength this BLC is optimized for, only for the linear ones.
 
     """
+    allowable_kinds = ['circular', 'linear']
+    """ Allowable types of BLC supported by this class"""
 
     def __init__(self, name="unnamed BLC", kind='circular', sigma=1, wavelength=None, **kwargs):
-        AnalyticOpticalElement.__init__(self, name=name, planetype=_IMAGE, **kwargs)
+        AnalyticImagePlaneElement.__init__(self, name=name, **kwargs)
 
         self.kind = kind.lower()  # either circular or linear
-        if self.kind not in ['circular', 'linear', 'nircamwedge', 'nircamcircular']:
-            raise ValueError("Invalid kind of BLC: " + self.kind)
+        if self.kind in ['nircamwedge', 'nircamcircular']:
+            import warnings
+            warnings.warn('JWST NIRCam specific functionality in poppy.BandLimitedCoron is moving to '+
+                    'webbpsf.NIRCam_BandLimitedCoron. The "nircamwedge" and "nircamcircular" options '+
+                    'in poppy will be removed in a future version of poppy.', DeprecationWarning)
+        elif self.kind not in self.allowable_kinds:  #['circular', 'linear', 'nircamwedge', 'nircamcircular']:
+            raise ValueError("Invalid value for kind of BLC: " + self.kind)
         self.sigma = float(sigma)  # size parameter. See section 2.1 of Krist et al. SPIE 2007, 2009
         if wavelength is not None:
             self.wavelength = float(wavelength)  # wavelength, for selecting the
@@ -367,7 +413,8 @@ class BandLimitedCoron(AnalyticOpticalElement):
             sigmar.clip(np.finfo(sigmar.dtype).tiny, out=sigmar)  # avoid divide by zero -> NaNs
 
             self.transmission = (1 - (2 * scipy.special.jn(1, sigmar) / sigmar) ** 2)
-        if self.kind == 'nircamcircular':
+            self.transmission[r==0] = 0   # special case center point (value based on L'Hopital's rule)
+        elif self.kind == 'nircamcircular':
             # larger sigma implies narrower peak? TBD verify if this is correct
             #
             r = np.sqrt(x ** 2 + y ** 2)
@@ -400,6 +447,7 @@ class BandLimitedCoron(AnalyticOpticalElement):
 
             self.transmission[wnd] = np.sqrt(1e-3)
             self.transmission[wborder] = 0
+            self.transmission[r==0] = 0   # special case center point (value based on L'Hopital's rule)
         elif self.kind == 'linear':
             #raise(NotImplemented("Generic linear not implemented"))
             sigmar = self.sigma * np.abs(y)
@@ -476,7 +524,7 @@ class BandLimitedCoron(AnalyticOpticalElement):
         return self.transmission
 
 
-class IdealFQPM(AnalyticOpticalElement):
+class IdealFQPM(AnalyticImagePlaneElement):
     """ Defines an ideal 4-quadrant phase mask coronagraph, with its retardance
     set perfectly to 0.5 waves at one specific wavelength and varying linearly on
     either side of that.  "Ideal" in the sense of ignoring chromatic effects other
@@ -493,7 +541,7 @@ class IdealFQPM(AnalyticOpticalElement):
     """
 
     def __init__(self, name="unnamed FQPM ", wavelength=10.65e-6, **kwargs):
-        AnalyticOpticalElement.__init__(self, planetype=_IMAGE, **kwargs)
+        AnalyticImagePlaneElement.__init__(self, **kwargs)
         self.name = name
 
         self.central_wavelength = wavelength
@@ -525,7 +573,7 @@ class IdealFQPM(AnalyticOpticalElement):
         return FQPM_phasor
 
 
-class RectangularFieldStop(AnalyticOpticalElement):
+class RectangularFieldStop(AnalyticImagePlaneElement):
     """ Defines an ideal rectangular field stop
 
     Parameters
@@ -537,16 +585,20 @@ class RectangularFieldStop(AnalyticOpticalElement):
     angle : float
         Position angle of the field stop sides relative to
         the detector +Y direction, in degrees counterclockwise.
+        (Deprecated; redundant with the 'rotation' parameter to
+        any AnalyticOpticalElement; kept for back compatibility.)
 
     """
 
-    def __init__(self, name="unnamed field stop", width=0.5, height=5.0, angle=0, **kwargs):
-        AnalyticOpticalElement.__init__(self, planetype=_IMAGE, **kwargs)
+    def __init__(self, name="unnamed field stop", width=0.5, height=5.0, angle=None, **kwargs):
+        AnalyticImagePlaneElement.__init__(self, **kwargs)
         self.name = name
         self.width = float(width)  # width of square stop in arcseconds.
         self.height = float(height)  # height of square stop in arcseconds.
-        #self.angle = float(angle)
-        self.rotation= float(angle)
+        if angle is not None:
+            import warnings
+            warnings.warn("'angle' parameter is deprecated. Use 'rotation' instead.", DeprecationWarning)
+            self.rotation= float(angle)
         self._default_display_size = max(height, width) * 1.2
 
     def getPhasor(self, wave):
@@ -586,19 +638,20 @@ class SquareFieldStop(RectangularFieldStop):
         Size of the field stop, in arcseconds. Default 20.
     angle : float
         Position angle of the field stop sides relative to the detector +Y direction, in degrees.
+        (Deprecated; redundant with the 'rotation' parameter to
+        any AnalyticOpticalElement; kept for back compatibility.)
 
     """
 
-    def __init__(self, name="unnamed field stop", size=20., angle=0, **kwargs):
-        RectangularFieldStop.__init__(self, width=size, height=size, **kwargs)
+    def __init__(self, name="unnamed field stop", size=20., angle=None, **kwargs):
+        RectangularFieldStop.__init__(self, width=size, height=size, angle=angle, **kwargs)
         self.name = name
         #self.size = size            # size of square stop in arcseconds.
         self.height = self.width
-        self.angle = angle
         self._default_display_size = size * 1.2
 
 
-class AnnularFieldStop(AnalyticOpticalElement):
+class AnnularFieldStop(AnalyticImagePlaneElement):
     """ Defines a circular field stop with an (optional) opaque circular center region
 
     Parameters
@@ -611,11 +664,11 @@ class AnnularFieldStop(AnalyticOpticalElement):
         Radius of the circular field stop outer edge. Default is 10. Set to 0.0 for no outer edge.
     """
     def __init__(self, name="unnamed annular field stop", radius_inner=0.0, radius_outer=1.0, **kwargs):
-        AnalyticOpticalElement.__init__(self, planetype=_IMAGE, **kwargs)
+        AnalyticImagePlaneElement.__init__(self, **kwargs)
         self.name = name
         self.radius_inner = radius_inner  # radius of circular occulter in arcseconds.
         self.radius_outer = radius_outer  # radius of circular field stop in arcseconds.
-        self._default_display_size = 10 #radius_outer 
+        self._default_display_size = 10 #radius_outer
 
     def getPhasor(self, wave):
         """ Compute the transmission inside/outside of the field stop.
@@ -662,7 +715,7 @@ class CircularOcculter(AnnularFieldStop):
         self._default_display_size = 10
 
 
-class BarOcculter(AnalyticOpticalElement):
+class BarOcculter(AnalyticImagePlaneElement):
     """ Defines an ideal bar occulter (like in MIRI's Lyot coronagraph)
 
     Parameters
@@ -673,14 +726,19 @@ class BarOcculter(AnalyticOpticalElement):
         width of the bar stop, in arcseconds. Default is 1.0
     angle : float
         position angle of the bar, rotated relative to the normal +y direction.
+        (Deprecated; redundant with the 'rotation' parameter to
+        any AnalyticOpticalElement; kept for back compatibility.)
 
     """
 
-    def __init__(self, name="bar occulter", width=1.0, angle=0, **kwargs):
-        AnalyticOpticalElement.__init__(self, planetype=_IMAGE, **kwargs)
+    def __init__(self, name="bar occulter", width=1.0, angle=None, **kwargs):
+        AnalyticImagePlaneElement.__init__(self, **kwargs)
         self.name = name
         self.width = width
-        self.angle = angle
+        if angle is not None:
+            import warnings
+            warnings.warn("'angle' parameter is deprecated. Use 'rotation' instead.", DeprecationWarning)
+            self.rotation = angle
         #self.pixelscale=0
         self._default_display_size = 10
 
@@ -693,15 +751,14 @@ class BarOcculter(AnalyticOpticalElement):
 
         y, x = self.get_coordinates(wave)
 
-        xnew = x * np.cos(np.deg2rad(self.angle)) + y * np.sin(np.deg2rad(self.angle))
-        w_inside = np.where(np.abs(xnew) <= self.width / 2)
+        w_inside = np.where(np.abs(x) <= self.width / 2)
         self.transmission = np.ones(wave.shape)
         self.transmission[w_inside] = 0
 
         return self.transmission
 
 
-#------ Analytic Pupil Plane elements -----
+#------ Analytic Pupil or Intermedian Plane elements (coordinates in meters) -----
 
 class FQPM_FFT_aligner(AnalyticOpticalElement):
     """  Helper class for modeling FQPMs accurately
@@ -738,7 +795,7 @@ class FQPM_FFT_aligner(AnalyticOpticalElement):
 
         if not isinstance(wave, Wavefront):  # pragma: no cover
             raise ValueError("FQPM getPhasor must be called with a Wavefront to define the spacing")
-        assert (wave.planetype == _PUPIL)
+        assert wave.planetype != _IMAGE, "This optic does not work on image planes"
 
         fft_im_pixelscale = wave.wavelength / wave.diam / wave.oversample * _RADIANStoARCSEC
         required_offset = -fft_im_pixelscale * 0.5
@@ -774,7 +831,7 @@ class ParityTestAperture(AnalyticOpticalElement):
 
     """
 
-    def __init__(self, name=None, radius=1.0, pad_factor=1.5, **kwargs):
+    def __init__(self, name=None, radius=1.0, pad_factor=1.0, **kwargs):
         if name is None: name = "Circle, radius=%.2f m" % radius
         AnalyticOpticalElement.__init__(self, name=name, planetype=_PUPIL, **kwargs)
         self.radius = radius
@@ -787,7 +844,7 @@ class ParityTestAperture(AnalyticOpticalElement):
         if not isinstance(wave, Wavefront):  # pragma: no cover
             raise ValueError("CircularAperture getPhasor must be called with a Wavefront "
                              "to define the spacing")
-        assert (wave.planetype == _PUPIL)
+        assert (wave.planetype != _IMAGE)
 
         y, x = self.get_coordinates(wave)
         r = np.sqrt(x ** 2 + y ** 2)  #* wave.pixelscale
@@ -829,15 +886,15 @@ class CircularAperture(AnalyticOpticalElement):
         does not make any numerical difference in the final result.
     """
 
-    def __init__(self, name=None, radius=1.0, pad_factor=1.5, **kwargs):
+    def __init__(self, name=None, radius=1.0, pad_factor=1.0, planetype=PlaneType.unspecified, **kwargs):
         try:
             self.radius = float(radius)
-        except ValueError:
+        except (ValueError, TypeError):
             raise TypeError("Argument 'radius' must be the radius of the pupil in meters")
 
         if name is None:
             name = "Circle, radius=%.2f m" % radius
-        super(CircularAperture, self).__init__( name=name, planetype=_PUPIL, **kwargs)
+        super(CircularAperture, self).__init__( name=name, planetype=planetype, **kwargs)
         # for creating input wavefronts - let's pad a bit:
         self.pupil_diam = pad_factor * 2 * self.radius
 
@@ -848,7 +905,7 @@ class CircularAperture(AnalyticOpticalElement):
         if not isinstance(wave, Wavefront):  # pragma: no cover
             raise ValueError("CircularAperture getPhasor must be called with a Wavefront "
                              "to define the spacing")
-        assert (wave.planetype == _PUPIL)
+        assert (wave.planetype != _IMAGE)
 
 
         y, x = self.get_coordinates(wave)
@@ -869,7 +926,7 @@ class HexagonAperture(AnalyticOpticalElement):
     """ Defines an ideal hexagonal pupil aperture
 
     Specify either the side length (= corner radius) or the
-    flat-to-flat distance.
+    flat-to-flat distance, or the point-to-point diameter.
 
     Parameters
     ----------
@@ -879,20 +936,36 @@ class HexagonAperture(AnalyticOpticalElement):
         side length (and/or radius) of hexagon, in meters. Overrides flattoflat if both are present.
     flattoflat : float, optional
         Distance between sides (flat-to-flat) of the hexagon, in meters. Default is 1.0
+    diameter : float, optional
+        point-to-point diameter of hexagon. Twice the side length. Overrides flattoflat, but is overridden by side.
+
     """
 
-    def __init__(self, name=None, flattoflat=None, side=None, **kwargs):
-        if flattoflat is None and side is None:
+    def __init__(self, name=None, side=None, diameter=None, flattoflat=None, **kwargs):
+        if flattoflat is None and side is None and diameter is None:
             self.side = 1.0
         elif side is not None:
             self.side = float(side)
+        elif diameter is not None:
+            self.side = float(diameter/2)
         else:
             self.side = float(flattoflat) / np.sqrt(3.)
+
+
         self.pupil_diam = 2 * self.side  # for creating input wavefronts
         if name is None:
             name = "Hexagon, side length= %.1f m" % self.side
 
         AnalyticOpticalElement.__init__(self, name=name, planetype=_PUPIL, **kwargs)
+
+
+    @property
+    def diameter(self):
+        return self.side*2
+
+    @property
+    def flat_to_flat(self):
+        return self.side*np.sqrt(3.)
 
 
     def getPhasor(self, wave):
@@ -901,7 +974,7 @@ class HexagonAperture(AnalyticOpticalElement):
         if not isinstance(wave, Wavefront):  # pragma: no cover
             raise ValueError("HexagonAperture getPhasor must be called with a Wavefront "
                              "to define the spacing")
-        assert (wave.planetype == _PUPIL)
+        assert (wave.planetype != _IMAGE)
 
         y, x = self.get_coordinates(wave)
         absy = np.abs(y)
@@ -1101,7 +1174,7 @@ class MultiHexagonAperture(AnalyticOpticalElement):
         """
         if not isinstance(wave, Wavefront):
             raise ValueError("getPhasor must be called with a Wavefront to define the spacing")
-        assert (wave.planetype == _PUPIL)
+        assert (wave.planetype != _IMAGE)
 
         #y, x = self.get_coordinates(wave)
         #absy = np.abs(y)
@@ -1164,17 +1237,16 @@ class NgonAperture(AnalyticOpticalElement):
     def __init__(self, name=None, nsides=6, radius=1, rotation=0., **kwargs):
         self.radius = radius
         self.nsides = nsides
-        self.rotation = rotation
         self.pupil_diam = 2 * self.radius  # for creating input wavefronts
         if name is None: name = "%d-gon, radius= %.1f m" % (self.nsides, self.radius)
-        AnalyticOpticalElement.__init__(self, name=name, planetype=_PUPIL, **kwargs)
+        AnalyticOpticalElement.__init__(self, name=name, planetype=_PUPIL, rotation=rotation, **kwargs)
 
     def getPhasor(self, wave):
         """ Compute the transmission inside/outside of the occulter.
         """
         if not isinstance(wave, Wavefront):  # pragma: no cover
             raise ValueError("getPhasor must be called with a Wavefront to define the spacing")
-        assert (wave.planetype == _PUPIL)
+        assert (wave.planetype != _IMAGE)
         y, x = self.get_coordinates(wave)
 
         phase = self.rotation * np.pi / 180
@@ -1212,10 +1284,9 @@ class RectangleAperture(AnalyticOpticalElement):
     def __init__(self, name=None, width=0.5, height=1.0, rotation=0.0, **kwargs):
         self.width = width
         self.height = height
-        self.rotation = rotation
         if name is None:
             name = "Rectangle, size= {s.width:.1f} m wide * {s.height:.1f} m high".format(s=self)
-        AnalyticOpticalElement.__init__(self, name=name, planetype=_PUPIL, **kwargs)
+        AnalyticOpticalElement.__init__(self, name=name, planetype=_PUPIL, rotation=rotation, **kwargs)
         # for creating input wavefronts:
         self.pupil_diam = np.sqrt(self.height ** 2 + self.width ** 2)
 
@@ -1224,7 +1295,7 @@ class RectangleAperture(AnalyticOpticalElement):
         """
         if not isinstance(wave, Wavefront):  # pragma: no cover
             raise ValueError("getPhasor must be called with a Wavefront to define the spacing")
-        assert (wave.planetype == _PUPIL)
+        assert (wave.planetype != _IMAGE)
 
 #        y, x = wave.coordinates()
 #
@@ -1261,7 +1332,6 @@ class SquareAperture(RectangleAperture):
         side length of the square, in meters. Default is 1.0
     rotation : float
         Rotation angle for the square. Default is 0.
-
 
     """
 
@@ -1323,7 +1393,7 @@ class SecondaryObscuration(AnalyticOpticalElement):
         """
         if not isinstance(wave, Wavefront):  # pragma: no cover
             raise ValueError("getPhasor must be called with a Wavefront to define the spacing")
-        assert (wave.planetype == _PUPIL)
+        assert (wave.planetype != _IMAGE)
 
         self.transmission = np.ones(wave.shape)
 
@@ -1397,7 +1467,7 @@ class AsymmetricSecondaryObscuration(SecondaryObscuration):
         """
         if not isinstance(wave, Wavefront):  # pragma: no cover
             raise ValueError("getPhasor must be called with a Wavefront to define the spacing")
-        assert (wave.planetype == _PUPIL)
+        assert (wave.planetype != _IMAGE)
 
         self.transmission = np.ones(wave.shape)
 
@@ -1460,9 +1530,68 @@ class ThinLens(CircularAperture):
         defocus_zernike = ((2 * r_norm ** 2 - 1) *
                            (0.5 * self.nwaves * self.reference_wavelength / wave.wavelength))
 
-        lens_phasor = np.exp(1.j * 2 * np.pi * defocus_zernike * aperture_intensity)
+        lens_phasor = aperture_intensity* np.exp(1.j * 2 * np.pi * defocus_zernike * aperture_intensity)
 
         return lens_phasor
+
+
+class GaussianAperture(AnalyticOpticalElement):
+    """ Defines an ideal Gaussian apodized pupil aperture,
+    or at least as much of one as can be fit into a finite-sized
+    array
+
+    The Gaussian's width must be set with either the fwhm or w parameters.
+
+    Note that this makes an optic whose electric *field amplitude*
+    transmission is the specified Gaussian; thus the intensity
+    transmission will be the square of that Gaussian.
+
+
+    Parameters
+    ----------
+    name : string
+        Descriptive name
+    fwhm : float, optional.
+        Full width at half maximum for the Gaussian, in meters.
+    w : float, optional
+        Beam width parameter, equal to fwhm/(2*sqrt(ln(2))).
+    pupil_diam : float, optional
+        default pupil diameter for cases when it is not otherwise
+        specified (e.g. displaying the optic by itself.) Default
+        value is 3x the FWHM.
+
+    """
+    def __init__(self, name=None, fwhm=None, w=None, pupil_diam=None, **kwargs):
+        if fwhm is None and w is None:
+            raise ValueError("Either the fwhm or w parameter must be set.")
+        elif w is not None:
+            self.w = float(w)
+        elif fwhm is not None:
+            self.w = float(fwhm)/(2*np.sqrt(np.log(2)))
+
+        if pupil_diam is None:
+            pupil_diam = 3 * self.fwhm # for creating input wavefronts
+        self.pupil_diam = pupil_diam
+        if name is None: name = "Gaussian aperture with fwhm ={0}".format(self.fwhm)
+        AnalyticOpticalElement.__init__(self, name=name, planetype=_PUPIL, **kwargs)
+
+    @property
+    def fwhm(self):
+        return self.w*(2*np.sqrt(np.log(2)))
+
+    def getPhasor(self, wave):
+        """ Compute the transmission inside/outside of the aperture.
+        """
+        if not isinstance(wave, Wavefront):  # pragma: no cover
+            raise ValueError("getPhasor must be called with a Wavefront to define the spacing")
+        y, x = self.get_coordinates(wave)
+
+        r = np.sqrt(x**2+y**2)
+
+        transmission = np.exp( (- (r/self.w)**2))
+
+        return transmission
+
 
 #------ generic analytic optics ------
 
@@ -1518,7 +1647,8 @@ class CompoundAnalyticOptic(AnalyticOpticalElement):
                 # for subsequent optics, validate they have the same type
                 if len(self.opticslist) == 0:
                     self.planetype = optic.planetype
-                elif self.planetype != optic.planetype:
+                elif (self.planetype != optic.planetype and self.planetype != PlaneType.unspecified and
+                        optic.planetype != PlaneType.unspecified):
                     raise ValueError("Cannot mix image plane and pupil plane optics in "
                                      "the same CompoundAnalyticOptic")
 

@@ -1,5 +1,8 @@
 language: python
 
+# Setting sudo to false opts in to Travis-CI container-based builds.
+sudo: false
+
 python:
     - 2.7
     # - 3.3
@@ -46,6 +49,14 @@ matrix:
         - python: 2.7
           env: NUMPY_VERSION=1.8 ASTROPY_VERSION=development SETUP_CMD='test'
 
+addons:
+    apt:
+        packages:
+        - graphviz                  # actually only needed for build_spinx
+        - texlive-latex-extra       # actually only needed for build_spinx
+        - dvipng                    # actually only needed for build_spinx
+
+
 before_install:
 
     # Use utf8 encoding. Should be default, but this is insurance against
@@ -54,14 +65,8 @@ before_install:
     - wget http://repo.continuum.io/miniconda/Miniconda-latest-Linux-x86_64.sh -O miniconda.sh
     - chmod +x miniconda.sh
     - ./miniconda.sh -b
-    - export PATH=/home/travis/miniconda/bin:$PATH
+    - export PATH=/home/travis/miniconda2/bin:$PATH
     - conda update --yes conda
-
-    # UPDATE APT-GET LISTINGS
-    - sudo apt-get update
-
-    # DOCUMENTATION DEPENDENCIES
-    - if [[ $SETUP_CMD == build_sphinx* ]]; then sudo apt-get install graphviz texlive-latex-extra dvipng; fi
 
 install:
 
@@ -82,8 +87,8 @@ install:
     # conda for packages available through conda, or pip for any other
     # packages. You should leave the `numpy=$NUMPY_VERSION` in the `conda`
     # install since this ensures Numpy does not get automatically upgraded.
-    - $CONDA_INSTALL numpy=$NUMPY_VERSION matplotlib scipy
-    # - if [[ $SETUP_CMD != egg_info ]]; then $PIP_INSTALL ...; fi
+    - if [[ $SETUP_CMD != egg_info ]]; then $CONDA_INSTALL numpy=$NUMPY_VERSION matplotlib scipy; fi
+    - if [[ $SETUP_CMD != egg_info ]]; then $PIP_INSTALL six enum34; fi
 
     # DOCUMENTATION DEPENDENCIES
     # build_sphinx needs sphinx and matplotlib (for plot_directive). Note that
