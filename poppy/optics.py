@@ -1531,20 +1531,19 @@ class ThinLens(CircularAperture):
         r = np.sqrt(x ** 2 + y ** 2)
         r_norm = r / self.radius
 
-        # the thin lens is explicitly also a circular aperture:
-        aperture_intensity = CircularAperture.get_transmission(self, wave)
-        # we use the aperture instensity here to mask the OPD we return
 
         # don't forget the factor of 0.5 to make the scaling factor apply as peak-to-valley
         # rather than center-to-peak
         defocus_zernike = ((2 * r_norm ** 2 - 1) *
                            (0.5 * self.nwaves * self.reference_wavelength)) # / wave.wavelength))
+        opd = defocus_zernike
 
-        opd = defocus_zernike * aperture_intensity
+        # the thin lens is explicitly also a circular aperture:
+        # we use the aperture instensity here to mask the OPD we return
+        aperture_intensity = CircularAperture.get_transmission(self, wave)
+        opd[aperture_intensity==0] = 0
+
         return opd
-        #lens_phasor = np.exp(1.j * 2 * np.pi * defocus_zernike * aperture_intensity)
-
-        #return lens_phasor
 
 
 class GaussianAperture(AnalyticOpticalElement):
