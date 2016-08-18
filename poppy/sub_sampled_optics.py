@@ -189,3 +189,99 @@ class subapertures(poppy.OpticalElement):
             
             self._propagated_flag = True
             
+
+class dispersion_plate(poppy.AnalyticOpticalElement):
+    """
+    Implements dispersion, defaulting to Sellemeier equation
+    (https://en.wikipedia.org/wiki/Sellmeier_equation) for BK7.
+        
+    Parameters
+    ----------
+    d : astropy.unit of length
+              the thickness of the dispersive element
+    Sellmeier_coeffs : list or ndarray
+       six coefficients in order: [B1,B2,B3,C1,C2,C3]
+    material : str
+       string describing a common dispersive material,
+       including: 'BK7' and 'fused silica'
+    custom_function :
+        a custom dispersion function.
+        For example the Sellmeier equation is implemented as:
+
+            lambda wlengths : np.sqrt(1+B1*wlengths**2/(wlengths**2-C1)
+               +B2*wlengths**2/(wlengths**2-C2)
+               +B3*wlengths**2/(wlengths**2-C3))
+    """
+    
+    def __init__(self,
+                 d=0*u.m,
+                 Sellmeier_coeffs=None,
+                 material='BK7',
+                  planetype=_PUPIL,
+                 custom_function=None,
+                 name='dispersion plate',
+                 **kwargs):
+        poppy.AnalyticOpticalElement.__init__(self, name=name,  planetype= planetype,**kwargs)
+        self.wavefront_display_hint = 'phase' # preferred display for wavefronts at this plane
+        self.d = d
+        if Sellmeier_coeffs is not None:
+            if np.size(Sellmeier_coeffs) == 6:
+                material = "coefficents"
+                self.B1, self.B2, self.B3, self.C1, self.C2,self.C3 = Sellmeier_coeffs
+                assert self.C1.is_equivalent(u.m**2)
+                assert self.C2.is_equivalent(u.m**2)
+                assert self.C3.is_equivalent(u.m**2)
+            else:
+                raise ValueError("Sellmeier equation takes 6 coefficients")
+        elif material != "coefficients":
+                print("Warning, no coefficients given")
+                if material == 'fused silica':
+                        print("Using Fused Silica Dispersion Constants from Malitson, I. H. (1965),\nInterspecimen comparison of the refractive index of fused silica,\nJOSA, 55(10), 120-1208.")
+                        self.B1=0.696166300
+                        self.B2=0.407942600
+                        self.B3=0.897479400
+                        self.C1=4.67914826*10**(-3)*u.um**2
+                        self.C2=1.35120631*10**(-2)*u.um**2
+                        self.C3=97.9340025*u.um**2
+                elif material == 'BK7':
+                        print("N-BK7 Dispersion Constants from SCHOTT Datasheet")
+                        self.B1=1.03961212
+                        self.B2=0.231792344
+                        self.B3=1.01046945
+                        self.C1=6.00069867*10**(-3)*u.um**2
+                        self.C2=2.00179144*10**(-2)*u.um**2
+                        self.C3=103.5606535*u.um**2
+                else:
+                    raise ValueError("Requested material not implemented.")
+        if custom_function is None:
+            self.dispersion = self.n_sellmeier
+        else:
+            self.dispersion = custom_function
+            
+    def n_sellmeier(self,wlengths):
+        """
+        Sellmeier Equation for the initialized coefficients or material.
+        
+        Parameters
+        ----------
+        wlengths : astropy.unit of length, e.g. astropy.units.nm
+        
+        """
+        
+        n = np.sqrt(1 + self.B1*wlengths**2/(wlengths**2 - self.C1)
+          + self.B2*wlengths**2/(wlengths**2 - self.C2)
+          + self.B3*wlengths**2/(wlengths**2 - self.C3))
+        return n
+
+    
+    def get_opd(self, wave):
+        """
+        returns optical path length through the dispersive element
+        Parameters
+        ----------
+        wave :  a poppy.wavefront object
+        """
+        
+        opl = self.d*n(wave.wavelength)
+        return opl
+
