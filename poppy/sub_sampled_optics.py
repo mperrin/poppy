@@ -5,6 +5,9 @@ import astropy.units as u
 
 from .poppy_core import OpticalElement, Wavefront, PlaneType, _PUPIL, _IMAGE, _RADIANStoARCSEC
 
+import logging
+_log = logging.getLogger('poppy')
+
 class subapertures(poppy.OpticalElement):
         """
         Example roadmap:
@@ -49,6 +52,7 @@ class subapertures(poppy.OpticalElement):
                      detector=None,
                      overwrite_inputwavefront=False,
                      display_intermediates=False,
+                     optical_system=None,
                  **kwargs):
             self.n_apertures = dimensions[0]*dimensions[1]
             
@@ -66,6 +70,9 @@ class subapertures(poppy.OpticalElement):
                 self.detector = poppy.Detector(0.01,fov_pixels=128)
             else:
                 self.detector=detector
+            self.optical_system = optical_system
+            if  optical_system is not None:
+                    raise ValueError("complete optical system after wavelets are not implemented yet")
             self.x_apertures=self.optic_array.shape[0]
             self.y_apertures=self.optic_array.shape[1]
             if self.x_apertures != self.y_apertures:
@@ -76,7 +83,7 @@ class subapertures(poppy.OpticalElement):
             self.display_intermediates = display_intermediates
             self._propagated_flag = False #can't have propagated when initializing
             poppy.OpticalElement.__init__(self, **kwargs)
-        
+                
         def sample_wf(self, wf):
             '''
             
@@ -94,9 +101,9 @@ class subapertures(poppy.OpticalElement):
                     if opt == None:
                         continue
                     
-                    aper_per_dim = wf.diam /(opt.radius*2) #assuming squares
+                    aper_per_dim = wf.diam /(opt.pupil_diam) #assuming squares
                     
-                    self.w= 2*opt.radius/wf.pixelscale #subaperture width in pixels 
+                    self.w = opt.pupil_diam/wf.pixelscale #subaperture width in pixels 
                     #the generated number of subapertures might not match the input wavefront dimensions
                     #want to center the subapertures on the incoming wavefront
                     
@@ -172,24 +179,59 @@ class subapertures(poppy.OpticalElement):
                 
             return wf
         def get_psfs(self):
+                if self.input_wavefront is None:
+                        raise ValueError("No input wavefront found.")
+            
+            
+                for i in range(self.x_apertures):
+                    for j in  range(self.y_apertures):
+                        sub_wf = self.wf_array[i][j]
+                        sub_wf.propagateTo(self.detector)
+                        if self.display_intermediates:
+                            plt.figure()
+                            sub_wf.display()
+            
+                self.w_out= self.wf_array[0][0].shape[0]*u.pix #subaperture width in pixels 
+                self.c_out =  self.w_out*self.x_apertures/2 #center of array
+            
+                self._propagated_flag = True
+
+        def multiply_all(self, optic):
+                if self.input_wavefront is None:
+                        raise ValueError("No input wavefront found.")
+                for i in range(self.x_apertures):
+                    for j in  range(self.y_apertures):
+                        self.wf_array[i][j] *= optic
+        
+
+        def get_centroids(self,
+                          cent_function=poppy.utils.measure_centroid,
+                          asFITS=True,
+                          **kwargs):
+            """
+                get centroid of intensity of each subwavefront
+
+            """
+            _log.debug("Centroid function:"+str(cent_function))
             if self.input_wavefront is None:
                 raise ValueError("No input wavefront found.")
-            
-            
+            if not self._propagated_flag:
+                _log.warn("Getting centroid without having propagated.")
+            self.centroid_list = np.zeros((2,self.x_apertures,self.y_apertures))
             for i in range(self.x_apertures):
-                 for j in  range(self.y_apertures):
+                for j in  range(self.y_apertures):
                     sub_wf = self.wf_array[i][j]
-                    sub_wf.propagateTo(self.detector)
-                    if self.display_intermediates:
-                        plt.figure()
-                        sub_wf.display()
-            
-            self.w_out= self.wf_array[0][0].shape[0]*u.pix #subaperture width in pixels 
-            self.c_out =  self.w_out*self.x_apertures/2 #center of array
-            
-            self._propagated_flag = True
-            
-
+                    if sub_wf.total_intensity == 0.0:
+                        _log.warn("Setting centroid of aperture with no flux to NaN.")
+                        self.centroid_list[:,i,j]=(np.nan,np.nan)
+                        continue
+                    if asFITS:
+                        intensity_array=sub_wf.asFITS()
+                    else:
+                        intensity_array = sub_wf.intensity
+                    self.centroid_list[:,i,j] = cent_function(intensity_array)
+            return self.centroid_list
+        
 class dispersion_plate(poppy.AnalyticOpticalElement):
     """
     Implements dispersion, defaulting to Sellemeier equation
@@ -211,6 +253,15 @@ class dispersion_plate(poppy.AnalyticOpticalElement):
             lambda wlengths : np.sqrt(1+B1*wlengths**2/(wlengths**2-C1)
                +B2*wlengths**2/(wlengths**2-C2)
                +B3*wlengths**2/(wlengths**2-C3))
+
+
+    Notes:
+    ----------
+
+    Using Fused Silica Dispersion Constants from Malitson, I. H.(1965),
+    Interspecimen comparison of the refractive index of fused silica,JOSA, 55(10), 120-1208.
+     N-BK7 dispersion Constants from SCHOTT Datasheet
+     
     """
     
     def __init__(self,
@@ -221,9 +272,11 @@ class dispersion_plate(poppy.AnalyticOpticalElement):
                  custom_function=None,
                  name='dispersion plate',
                  **kwargs):
+        
         poppy.AnalyticOpticalElement.__init__(self, name=name,  planetype= planetype,**kwargs)
         self.wavefront_display_hint = 'phase' # preferred display for wavefronts at this plane
         self.d = d
+        
         if Sellmeier_coeffs is not None:
             if np.size(Sellmeier_coeffs) == 6:
                 material = "coefficents"
@@ -236,7 +289,6 @@ class dispersion_plate(poppy.AnalyticOpticalElement):
         elif material != "coefficients":
                 print("Warning, no coefficients given")
                 if material == 'fused silica':
-                        print("Using Fused Silica Dispersion Constants from Malitson, I. H. (1965),\nInterspecimen comparison of the refractive index of fused silica,\nJOSA, 55(10), 120-1208.")
                         self.B1=0.696166300
                         self.B2=0.407942600
                         self.B3=0.897479400
@@ -244,7 +296,6 @@ class dispersion_plate(poppy.AnalyticOpticalElement):
                         self.C2=1.35120631*10**(-2)*u.um**2
                         self.C3=97.9340025*u.um**2
                 elif material == 'BK7':
-                        print("N-BK7 Dispersion Constants from SCHOTT Datasheet")
                         self.B1=1.03961212
                         self.B2=0.231792344
                         self.B3=1.01046945
@@ -277,9 +328,11 @@ class dispersion_plate(poppy.AnalyticOpticalElement):
     def get_opd(self, wave):
         """
         returns optical path length through the dispersive element
+        
         Parameters
         ----------
         wave :  a poppy.wavefront object
+        
         """
         
         opl = self.d*n(wave.wavelength)
