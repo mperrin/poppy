@@ -1683,6 +1683,3 @@ class CompoundAnalyticOptic(AnalyticOpticalElement):
             nextphasor = optic.get_phasor(wave)
             phasor *= nextphasor
         return phasor
-
-
-
