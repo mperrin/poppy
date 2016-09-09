@@ -3,7 +3,9 @@ import poppy
 import matplotlib.pyplot as plt
 import astropy.units as u
 
-from .poppy_core import OpticalElement, Wavefront, PlaneType, _PUPIL, _IMAGE, _RADIANStoARCSEC
+from .poppy_core import OpticalElement, Detector, Wavefront, PlaneType, _PUPIL, _IMAGE, _RADIANStoARCSEC
+from .optics import CircularAperture
+from .utils import measure_centroid
 
 import logging
 _log = logging.getLogger('poppy')
@@ -43,10 +45,10 @@ class subapertures(poppy.OpticalElement):
         
         def __init__(self,
                      dimensions = (2,2),
-                     optic_array = np.array([[poppy.CircularAperture(radius=2.,planetype=PlaneType.pupil),
-                                              poppy.CircularAperture(radius=2.,planetype=PlaneType.pupil)],
-                                    [poppy.CircularAperture(radius=2.,planetype=PlaneType.pupil),
-                                     poppy.CircularAperture(radius=2.,planetype=PlaneType.pupil)]]),
+                     optic_array = np.array([[CircularAperture(radius=2.,planetype=PlaneType.pupil),
+                                              CircularAperture(radius=2.,planetype=PlaneType.pupil)],
+                                    [CircularAperture(radius=2.,planetype=PlaneType.pupil),
+                                     CircularAperture(radius=2.,planetype=PlaneType.pupil)]]),
                      crosstalk=False,
                      x_y_offset=(0,0),
                      detector=None,
@@ -67,7 +69,7 @@ class subapertures(poppy.OpticalElement):
             self.input_wavefront = None
             self.output_wavefront = None
             if detector == None:
-                self.detector = poppy.Detector(0.01,fov_pixels=128)
+                self.detector = Detector(0.01,fov_pixels=128)
             else:
                 self.detector=detector
             self.optical_system = optical_system
@@ -82,7 +84,7 @@ class subapertures(poppy.OpticalElement):
             self.overwrite_inputwavefront = overwrite_inputwavefront
             self.display_intermediates = display_intermediates
             self._propagated_flag = False #can't have propagated when initializing
-            poppy.OpticalElement.__init__(self, **kwargs)
+            OpticalElement.__init__(self, **kwargs)
                 
         def sample_wf(self, wf):
             '''
@@ -154,7 +156,7 @@ class subapertures(poppy.OpticalElement):
                 c = self.c_out
                 w = self._w_out
                 #create new output wavefront
-                wf = poppy.Wavefront(wavelength = self.input_wavefront.wavelength, 
+                wf = Wavefront(wavelength = self.input_wavefront.wavelength, 
                                      npix = 2*self.c_out.value, 
                                      dtype = self.input_wavefront.wavefront.dtype, 
                                      pixelscale = self.detector.pixelscale,
@@ -208,7 +210,7 @@ class subapertures(poppy.OpticalElement):
         
 
         def get_centroids(self,
-                          cent_function=poppy.utils.measure_centroid,
+                          cent_function=measure_centroid,
                           asFITS=True,
                           **kwargs):
             """
@@ -232,7 +234,7 @@ class subapertures(poppy.OpticalElement):
                         intensity_array=sub_wf.asFITS()
                     else:
                         intensity_array = sub_wf.intensity
-                    self.centroid_list[:,i,j] = cent_function(intensity_array)
+                    self.centroid_list[:,i,j] = cent_function(intensity_array,**kwargs)
             return self.centroid_list
         
         def _replace_subwavefronts(self,replacement_array):
