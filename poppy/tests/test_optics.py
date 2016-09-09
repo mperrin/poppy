@@ -474,3 +474,28 @@ def test_ThinLens(display=False):
         "ThinLens shouldn't be affected by null optical elements! Introducing extra image planes "
         "made the output PSFs differ beyond numerical tolerances."
     )
+
+
+def test_subapertures(display=False):
+
+    n_lenslets=8
+    wf=poppy.Wavefront(diam=8,npix=2048,wavelength=500*u.nm)
+    r_lenslet=wf.diam/n_lenslets/2.
+    wf *= poppy.CircularAperture(radius=wf.diam/2.)
+    optic_array = np.array([[poppy.RectangleAperture(width=r_lenslet,height=r_lenslet),
+                             poppy.RectangleAperture(width=r_lenslet,height=r_lenslet)],
+                             [poppy.RectangleAperture(width=r_lenslet,height=r_lenslet),
+                              poppy.RectangleAperture(width=r_lenslet,height=r_lenslet)]])
+
+    #this repeating only works for even numbers of lenslets
+    big_optic_array=optic_array.repeat(n_lenslets/2.,axis=0).repeat(n_lenslets/2.,axis=1)
+    sub=poppy.sub_sampled_optics.subapertures(optic_array=big_optic_array,display_intermediates=False,detector=poppy.Detector(0.02,fov_pixels=64))
+    sub.sample_wf(wf)
+
+    sub.get_psfs()
+    x,y = sub.get_centroids(relativeto='center')
+    #just tests that the center of the resultant PSFs are centered
+    assert (np.round(x[n_lenslets/2],6)==np.round(y[n_lenslets/2],6) ).all()
+    assert (np.round(x[n_lenslets/2],6)==0).all()
+
+
