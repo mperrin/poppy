@@ -92,7 +92,7 @@ class subapertures(poppy.OpticalElement):
             
             '''
             #save the input wavefront
-            self.input_wavefront=wf
+            self.input_wavefront = wf
             for i in range(self.x_apertures):
                  for j in  range(self.y_apertures):
                     opt = self.optic_array[i][j] #get an optic
@@ -103,13 +103,13 @@ class subapertures(poppy.OpticalElement):
                     
                     aper_per_dim = wf.diam /(opt.pupil_diam) #assuming squares
                     
-                    self.w = opt.pupil_diam/wf.pixelscale #subaperture width in pixels 
+                    self._w = opt.pupil_diam/wf.pixelscale #subaperture width in pixels 
                     #the generated number of subapertures might not match the input wavefront dimensions
                     #want to center the subapertures on the incoming wavefront
                     
                     self.c = wf.wavefront.shape[0]/2*u.pix #center of array
                     c=self.c
-                    w=self.w
+                    w=self._w
                     sub_wf=wf.copy() #new wavefront has all the previous wavefront properties
                     lower_x = int((c + w*(i)  - w*self.x_apertures/2).value)
                     lower_y = int((c + w*(j)  - w*self.y_apertures/2).value)
@@ -134,7 +134,10 @@ class subapertures(poppy.OpticalElement):
         #subsample input wavefront
         
         #generate subsampled grid of mini-pupils and return array of output wavefronts
-                
+        @property
+        def subaperture_width(self):
+            return self._w*self.input_wavefront.pixelscale
+        
         #return a composite wavefront if an array of output wavefronts was generated
         def get_wavefront_array(self):
             """
@@ -149,7 +152,7 @@ class subapertures(poppy.OpticalElement):
                 #recalculate dimensions
                 print("Tiling propagated wavefront arrays.")
                 c = self.c_out
-                w = self.w_out
+                w = self._w_out
                 #create new output wavefront
                 wf = poppy.Wavefront(wavelength = self.input_wavefront.wavelength, 
                                      npix = 2*self.c_out.value, 
@@ -159,7 +162,7 @@ class subapertures(poppy.OpticalElement):
                 
             else:
                 c = self.c
-                w = self.w
+                w = self._w
                 wf = self.input_wavefront.copy()
             for i in range(self.x_apertures):
                  for j in  range(self.y_apertures):
@@ -191,8 +194,8 @@ class subapertures(poppy.OpticalElement):
                             plt.figure()
                             sub_wf.display()
             
-                self.w_out= self.wf_array[0][0].shape[0]*u.pix #subaperture width in pixels 
-                self.c_out =  self.w_out*self.x_apertures/2 #center of array
+                self._w_out= self.wf_array[0][0].shape[0]*u.pix #subaperture width in pixels 
+                self.c_out =  self._w_out*self.x_apertures/2 #center of array
             
                 self._propagated_flag = True
 
@@ -232,6 +235,20 @@ class subapertures(poppy.OpticalElement):
                     self.centroid_list[:,i,j] = cent_function(intensity_array)
             return self.centroid_list
         
+        def _replace_subwavefronts(self,replacement_array):
+            for i in range(self.x_apertures):
+                 for j in  range(self.y_apertures):
+                    sub_wf = self.wf_array[i][j] #get an subaperture wavefront
+                    lower_x = int((c + self._w*(i)  - self._w*self.x_apertures/2).value)
+                    lower_y = int((c + self._w*(j)  - self._w*self.y_apertures/2).value)
+                    upper_x = int((c + self._w*(i+1)  - self._w*self.x_apertures/2).value)
+                    upper_y = int((c + self._w*(j+1)  - self._w*self.y_apertures/2).value)
+                    #check for padding
+
+                    if sub_wf == None:
+                        wf.wavefront[lower_x:upper_x,lower_y:upper_y] = np.nan
+                    else:
+                        wf.wavefront[lower_x:upper_x,lower_y:upper_y] = sub_wf.wavefront 
 class dispersion_plate(poppy.AnalyticOpticalElement):
     """
     Implements dispersion, defaulting to Sellemeier equation
