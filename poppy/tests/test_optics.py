@@ -475,21 +475,21 @@ def test_ThinLens(display=False):
         "made the output PSFs differ beyond numerical tolerances."
     )
 
-
+from .. import sub_sampled_optics
 def test_subapertures(display=False):
 
     n_lenslets=8
-    wf=poppy.Wavefront(diam=8,npix=2048,wavelength=500*u.nm)
+    wf=poppy_core.Wavefront(diam=8,npix=2048,wavelength=500*u.nm)
     r_lenslet=wf.diam/n_lenslets/2.
-    wf *= poppy.CircularAperture(radius=wf.diam/2.)
-    optic_array = np.array([[poppy.RectangleAperture(width=r_lenslet,height=r_lenslet),
-                             poppy.RectangleAperture(width=r_lenslet,height=r_lenslet)],
-                             [poppy.RectangleAperture(width=r_lenslet,height=r_lenslet),
-                              poppy.RectangleAperture(width=r_lenslet,height=r_lenslet)]])
+    wf *= optics.CircularAperture(radius=wf.diam/2.)
+    optic_array = np.array([[optics.CircularAperture(radius=r_lenslet),
+                                              optics.CircularAperture(radius=r_lenslet)],
+                                    [optics.CircularAperture(radius=r_lenslet),
+                                     optics.CircularAperture(radius=r_lenslet)]])
 
     #this repeating only works for even numbers of lenslets
     big_optic_array=optic_array.repeat(n_lenslets/2.,axis=0).repeat(n_lenslets/2.,axis=1)
-    sub=poppy.sub_sampled_optics.subapertures(optic_array=big_optic_array,display_intermediates=False,detector=poppy.Detector(0.02,fov_pixels=64))
+    sub=sub_sampled_optics.subapertures(optic_array=big_optic_array,display_intermediates=False,detector=poppy_core.Detector(0.02,fov_pixels=64))
     sub.sample_wf(wf)
 
     sub.get_psfs()
