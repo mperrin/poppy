@@ -15,9 +15,9 @@ sudo: false
 addons:
     apt:
         packages:
-            - graphviz
-            - texlive-latex-extra
-            - dvipng
+        - graphviz
+        - texlive-latex-extra
+        - dvipng
 
 env:
     global:
@@ -88,7 +88,7 @@ install:
     # other dependencies.
 
 script:
-   - python setup.py $SETUP_CMD
+    - python setup.py $SETUP_CMD
 
 after_success:
     # If coveralls.io is set up for this package, uncomment the line
@@ -96,6 +96,6 @@ after_success:
     # The coveragerc file may be customized as needed for your package.
     - if [[ $SETUP_CMD == 'test --coverage' ]]; then coveralls --rcfile='poppy/tests/coveragerc'; fi
 notifications:
-  email:
-    - mperrin@stsci.edu
-    - jlong@stsci.edu
+    email:
+        - mperrin@stsci.edu
+        - jlong@stsci.edu
