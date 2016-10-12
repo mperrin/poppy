@@ -919,14 +919,6 @@ class CircularAperture(AnalyticOpticalElement):
 
         y, x = self.get_coordinates(wave)
         radius = self.radius.to(u.meter).value
-        #r = np.sqrt(x ** 2 + y ** 2)
-        #del x
-        #del y
-
-        #w_outside = np.where(r > self.radius)
-        #del r
-        #self.transmission = np.ones(wave.shape)
-        #self.transmission[w_outside] = 0
         pixscale = np.abs(x[0,1] - x[0,0])
         self.transmission = geometry.filled_circle_aa(wave.shape, 0,0,radius/pixscale,x/pixscale, y/pixscale)
         return self.transmission
@@ -1519,7 +1511,7 @@ class ThinLens(CircularAperture):
 
     @utils.quantity_input(reference_wavelength=u.meter)
     def __init__(self, name='Thin lens', nwaves=4.0, reference_wavelength=2e-6*u.meter,
-                 radius=None, **kwargs):
+                 radius=1.0*u.meter, **kwargs):
         self.reference_wavelength = reference_wavelength
         self.nwaves = nwaves
         self.max_phase_delay = reference_wavelength * nwaves
@@ -1538,11 +1530,14 @@ class ThinLens(CircularAperture):
                            (0.5 * self.nwaves * self.reference_wavelength.to(u.meter).value))
 
         # the thin lens is explicitly also a circular aperture:
-        # we use the aperture instensity here to mask the OPD we return
+        # we use the aperture instensity here to mask the OPD we return, in
+        # order to avoid bogus values outside the aperture
         aperture_intensity = CircularAperture.get_transmission(self, wave)
 
         # add negative sign here to get desired sign convention
-        opd = -defocus_zernike * aperture_intensity
+        opd = -defocus_zernike
+        opd[aperture_intensity==0]=0
+
         return opd
 
 
