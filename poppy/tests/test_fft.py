@@ -101,10 +101,11 @@ def test_fft_fqpm(): #oversample=2, verbose=True, wavelength=2e-6):
     psf = osys.calcPSF(wavelength=wavelen)
     assert psf[0].data.sum() < 0.002
 
-def test_SAMC(oversample=4):
+def test_SAMC(oversample=4, display=False):
     """ Test semianalytic coronagraphic method
 
     """
+
     lyot_radius = 6.5/2.5
     pixelscale = 0.010
 
@@ -119,12 +120,12 @@ def test_SAMC(oversample=4):
     sam_osys = poppy_core.SemiAnalyticCoronagraph(osys, oversample=oversample, occulter_box=0.15)
 
     #t0s = time.time()
-    psf_sam = sam_osys.calcPSF()
+    psf_sam = sam_osys.calc_psf()
     #t1s = time.time()
 
     #plt.figure(2)
     #t0f = time.time()
-    psf_fft = osys.calcPSF()
+    psf_fft = osys.calc_psf()
     #t1f = time.time()
 
     #plt.figure(3)
@@ -134,8 +135,12 @@ def test_SAMC(oversample=4):
     #plt.subplot(122)
     #poppy.utils.display_PSF(psf_sam, title="SAM")
 
+    if display:
+        import matplotlib.pyplot as plt
+        import poppy.utils
+        poppy.utils.display_psf_differences(psf_fft, psf_sam, vmax=1e-7)
 
-    
+
     # The pixel by pixel difference should be small:
     maxdiff = np.abs(psf_fft[0].data - psf_sam[0].data).max()
     #print "Max difference between results: ", maxdiff

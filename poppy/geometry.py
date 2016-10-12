@@ -156,7 +156,7 @@ def pixwt(xc, yc, r, x, y):
 
 
 
-def filled_circle_aa(shape, xcenter, ycenter, radius, xarray=None, yarray=None, 
+def filled_circle_aa(shape, xcenter, ycenter, radius, xarray=None, yarray=None,
         fillvalue=1, clip=True, cliprange=(0,1)):
     """Draw a filled circle with subpixel antialiasing into an array.
 

@@ -8,6 +8,7 @@ import astropy.units as u
 import warnings
 
 from . import utils
+from . import geometry
 from .version import version
 from . import geometry
 
