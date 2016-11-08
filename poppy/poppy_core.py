@@ -2367,7 +2367,7 @@ class OpticalElement(object):
 
         if self.pixelscale is not None:
             # TODO handle units better here for pupil vs. image planes? meters/pix vs arcsec/pix
-            halfsize = self.pixelscale.value * self.amplitude.shape[0] / 2
+            halfsize = self.pixelscale.to(u.m).value * self.amplitude.shape[0] / 2
             _log.debug("Display pixel scale = {} ".format(self.pixelscale))
         else:
             # TODO not sure this code path ever gets used - since pixelscale is set temporarily
