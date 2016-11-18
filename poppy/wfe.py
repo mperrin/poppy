@@ -346,6 +346,11 @@ class StatisticalOpticalElement(OpticalElement):
 
         simple, brute-force and slightly hacky calculation just using
 		shifts in the 4 cardinal directions.
+
+
+        Returns a tuple containing 2 arrays:
+            x = distance in meters for the structure function, and
+            the structure function itself
         """
         if npoints is None:
             npoints = int(self.npix/2)
@@ -357,20 +362,33 @@ class StatisticalOpticalElement(OpticalElement):
             for shift,axis in ((1,0),(-1,0),(1,1),(-1,1)):
                 result[i]=((array-np.roll(array,shift*i,axis=axis))**2).mean()
             result[i]/4
-        return result
+
+        x = np.arange(npoints+1) * self.pixelscale
+        return x, result
 
     def plot_structure_fn(self,ax=None):
+        """ Plot the structure function of the WFE OPD.
 
-        sf = self.structure_fn()
+        For some background on structure functions & why they are useful, see :
+            Parks (2010),
+            https://www.osapublishing.org/abstract.cfm?uri=OFT-2010-OWE3
 
+        """
+
+        dist, sf = self.structure_fn()
 
         if ax is None:
             ax = plt.gca()
-        ax.loglog(sf, label = "Structure function of OPD")
+        ax.loglog(dist, sf, label = "Structure function of OPD")
 
-        x=np.arange(40)
+        x=np.arange(40) * self.pixelscale
         ax.plot(x,sf[1]*(x/x[1])**(5./3),ls=":", label="Theoretical Kolmogorov")
 
+        ax.set_xlabel("Separation [meters]")
+        ax.set_ylabel("Structure Function [m^2]")
+
+    def writeto(self, filename):
+        raise NotImplementedError('Not implemented yet')
 
 class KolmogorovWFE(StatisticalOpticalElement):
     """
@@ -411,30 +429,32 @@ class KolmogorovWFE(StatisticalOpticalElement):
         w_i=np.random.normal(size=shape)
         w=w_r + np.complex(0,1)*w_i
 
-        #multiply by sqrt of PSD
+        # multiply by sqrt of PSD
         wf=w*np.sqrt(psd)
+
+        # TODO : the normalization isn't right yet... This is yielding OPD arrays
+        # with WFE in excess of 1 meter. So something is scaled wrong.
+
         self.opd = np.fft.fft2(np.fft.fftshift(wf)).real
 
 
-
-
-
 class PowerSpectralDensityWFE(StatisticalOpticalElement):
-    """ Compute WFE from a power spectral density. 
+    """ Compute WFE from a power spectral density.
 
     Inspired by (and loosely derived from) prop_psd_errormap in John Krist's PROPER library.
 
 
-    For some background on structure functions & why they are useful, see : http://www.optics.arizona.edu/optomech/Spr11/523L/Specifications%20final%20color.pdf
+
+    **** PLACEHOLDER NOT YET IMPLEMENTED ****
 
     """
     def __init__(self, name=None,  seed=None, low_freq_amp=1, correlation_length=1.0, powerlaw=1.0,  **kwargs):
-        """ 
+        """
 
         Parameters
         -----------
         low_freq_amp : float
-            RMS error per spatial frequency at low spatial frequencies. 
+            RMS error per spatial frequency at low spatial frequencies.
         correlation_length : float
             Correlation length parameter in cycles/meter. This indicates where the PSD transitions from
             the low frequency behavior (~ constant amplitude per spatial frequency) to the high
@@ -446,16 +466,12 @@ class PowerSpectralDensityWFE(StatisticalOpticalElement):
         StatisticalOpticalElement.__init__(self,name=name,**kwargs)
         raise NotImplementedError('Not implemented yet')
 
-        # compute X and Y coordinate grids 
+        # compute X and Y coordinate grids
         # compute wavenumber K in cycles/meter
         # compute 2D PSD
         # set piston to zero
         # scale RMS error as desired
         # create realization of the PSD using random phases
         # force realized map to have the desired RMS
-
-    def saveto(self, filename):
-        raise NotImplementedError('Not implemented yet')
-
 
 
