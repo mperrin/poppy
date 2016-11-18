@@ -1,5 +1,12 @@
+import warnings
 import numpy as np
 import astropy.io.fits as fits
+import pytest
+
+try:
+    import pyfftw
+except ImportError:
+    pyfftw = None
 
 from .. import utils
 
@@ -7,7 +14,7 @@ def test_padToSize():
     square = np.ones((300,300))
 
     for desiredshape in [ (500, 500), (400,632), (2048, 312)]:
-        newshape = utils.padToSize(square, desiredshape).shape 
+        newshape = utils.pad_to_size(square, desiredshape).shape
         for i in [0,1]: assert newshape[i] == desiredshape[i]
 
 
@@ -65,8 +72,28 @@ def test_measure_FWHM(display=False):
         meas_fwhm = utils.measure_fwhm(testfits, center=center)
         print("Measured FWHM: {0:.4f} arcsec, {1:.4f} pixels ".format(meas_fwhm, meas_fwhm/pxscl))
 
-        reldiff =  np.abs((meas_fwhm/pxscl) - desired_fwhm ) / desired_fwhm 
+        reldiff =  np.abs((meas_fwhm/pxscl) - desired_fwhm ) / desired_fwhm
         print("Desired: {0:.4f}. Relative difference: {1:.4f}    Tolerance: {2:.4f}".format(desired_fwhm, reldiff, tol))
         assert( reldiff < tol )
 
+@pytest.mark.skipif(pyfftw is None, reason="pyFFTW not found")
+def test_load_save_fftw_wisdom(tmpdir):
+    with tmpdir.as_cwd():
+        utils.fftw_save_wisdom('./wisdom.json')
+    assert tmpdir.join('wisdom.json').exists()
+    with tmpdir.as_cwd():
+        utils.fftw_load_wisdom('./wisdom.json')
+    assert utils._loaded_fftw_wisdom is True
 
+@pytest.mark.skipif(pyfftw is None, reason="pyFFTW not found")
+def test_load_corrupt_fftw_wisdom(tmpdir):
+    utils._loaded_fftw_wisdom = False
+    with tmpdir.as_cwd():
+        with open('./wisdom.json', 'w') as f:
+            f.write('''{"longdouble": "(fftw-3.3.4 fftwl_wisdom #x0821b5c7 #xa4c07d5a #x21b58211 #xebe513ab\\n)\\n", "single": "(fftw-3.3.4 fftwf_wisdom #xa84d9475 #xdb220970 #x4aa6f1c4 #xf3163254\\n)\\n", "_FFTW_INIT":''')
+        assert tmpdir.join('wisdom.json').exists()
+        with warnings.catch_warnings(record=True) as w:
+            utils.fftw_load_wisdom('./wisdom.json')
+            assert len(w) == 1
+            assert issubclass(w[-1].category, utils.FFTWWisdomWarning)
+    assert utils._loaded_fftw_wisdom is False

@@ -4,6 +4,8 @@ error in an OpticalSystem
 
  * ZernikeWFE
  * ParameterizedWFE (for use with hexike or zernike basis functions)
+ * SineWaveWFE
+ * TODO: MultiSineWaveWFE ?
  * TODO: PowerSpectrumWFE
  * TODO: KolmogorovWFE
 
@@ -12,24 +14,88 @@ error in an OpticalSystem
 from __future__ import (absolute_import, division, print_function,
                         unicode_literals)
 import collections
+from functools import wraps
 import numpy as np
+import astropy.units as u
+import matplotlib.pyplot as plt
 
 from .optics import AnalyticOpticalElement, CircularAperture
-from .poppy_core import Wavefront, _PUPIL
+from .poppy_core import Wavefront, OpticalElement, _PUPIL
 from . import zernike
+from . import utils
 
-__all__ = ['WavefrontError', 'ParameterizedWFE', 'ZernikeWFE']
+__all__ = ['WavefrontError', 'ParameterizedWFE', 'ZernikeWFE', 'SineWaveWFE']
+
+def _accept_wavefront_or_meters(f):
+    """Decorator that ensures the first positional method argument
+    is a poppy.Wavefront or a floating point number of meters
+    for a wavelength
+    """
+
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        if not isinstance(args[1], Wavefront):
+            wave = Wavefront(wavelength=args[1])
+            new_args = (args[0],) + (wave,) + (args[2:])
+            return f(*new_args, **kwargs)
+        else:
+            return f(*args, **kwargs)
+    return wrapper
 
 class WavefrontError(AnalyticOpticalElement):
+    """A base class for different sources of wavefront error
+
+    Analytic optical elements that represent wavefront error should
+    derive from this class and override methods appropriately.
+    Defined to be a pupil-plane optic.
+    """
     def __init__(self, **kwargs):
-        super(WavefrontError, self).__init__(planetype=_PUPIL, **kwargs)
+        if 'planetype' not in kwargs:
+            kwargs['planetype'] = _PUPIL
+        super(WavefrontError, self).__init__(**kwargs)
+        # in general we will want to see phase rather than intensity at this plane
+        self.wavefront_display_hint='phase'
+
+    @_accept_wavefront_or_meters
+    def get_opd(self, wave, units='meters'):
+        """Construct the optical path difference array for a wavefront error source
+        as evaluated across the pupil for an input wavefront `wave`
+
+        Parameters
+        ----------
+        wave : Wavefront
+            Wavefront object with a `coordinates` method that returns (y, x)
+            coordinate arrays in meters in the pupil plane
+        units : 'meters' or 'waves'
+            The units of optical path difference (Default: meters)
+        """
+        if not isinstance(wave, Wavefront):
+            wave = Wavefront(wavelength=wave)
+
+    @_accept_wavefront_or_meters
+    def getPhasor(self, wave):
+        """Construct the phasor array for an input wavefront `wave`
+        that will apply the wavefront error model based on an OPD
+        map from the `get_opd` method.
+
+        Parameters
+        ----------
+        wave : Wavefront or float
+            Wavefront object with a `coordinates` method that returns (y, x)
+            coordinate arrays in meters in the pupil plane, or float with
+            a wavefront wavelength in meters
+        """
+        opd_map = self.get_opd(wave, units='meters')
+        opd_as_phase = 2 * np.pi * opd_map / (wave.wavelength.to(u.meter).value)
+        wfe_phasor = np.exp(1.j * opd_as_phase)
+        return wfe_phasor
 
     def rms(self):
-        """ RMS wavefront error induced by this surface """
+        """RMS wavefront error induced by this surface"""
         raise NotImplementedError('Not implemented yet')
 
     def peaktovalley(self):
-        """ Peak-to-valley wavefront error induced by this surface """
+        """Peak-to-valley wavefront error induced by this surface"""
         raise NotImplementedError('Not implemented yet')
 
 def _wave_to_rho_theta(wave, pupil_radius):
@@ -75,14 +141,21 @@ class ParameterizedWFE(WavefrontError):
         circumscribing the actual pupil shape.
     basis_factory : callable
         basis_factory will be called with the arguments `nterms`, `rho`,
-        and `theta`. `nterms` specifies how many terms to compute,
-        starting with the j=1 term in the Noll indexing convention for
-        `nterms` = 1 and counting up. `rho` and `theta` are square
-        arrays holding the rho and theta coordinates at each pixel in
-        the pupil plane.
+        `theta`, and `outside`.
 
-        `rho` is normalized such that `rho` == 1.0 for pixels at
-        `radius` meters from the center.
+        `nterms` specifies how many terms to compute, starting with the
+        j=1 term in the Noll indexing convention for `nterms` = 1 and
+        counting up.
+
+        `rho` and `theta` are square arrays holding the rho and theta
+        coordinates at each pixel in the pupil plane. `rho` is
+        normalized such that `rho` == 1.0 for pixels at `radius` meters
+        from the center.
+
+        `outside` contains the value to assign pixels outside the
+        radius `rho` == 1.0. (Always 0.0, but provided for
+        compatibility with `zernike.zernike_basis` and
+        `zernike.hexike_basis`.)
     """
     def __init__(self, name="Parameterized Distortion", coefficients=None, radius=None,
                  basis_factory=None, **kwargs):
@@ -98,20 +171,24 @@ class ParameterizedWFE(WavefrontError):
         self.basis_factory = basis_factory
         super(ParameterizedWFE, self).__init__(name=name, **kwargs)
 
-    def getPhasor(self, wave):
+    @_accept_wavefront_or_meters
+    def get_opd(self, wave, units='meters'):
         rho, theta = _wave_to_rho_theta(wave, self.radius)
         combined_distortion = np.zeros(rho.shape)
 
         nterms = len(self.coefficients)
-        computed_terms = self.basis_factory(nterms=nterms, rho=rho, theta=theta)
+        computed_terms = self.basis_factory(nterms=nterms, rho=rho, theta=theta, outside=0.0)
 
         for idx, coefficient in enumerate(self.coefficients):
             if coefficient == 0.0:
                 continue  # save the trouble of a multiply-and-add of zeros
             combined_distortion += coefficient * computed_terms[idx]
-
-        opd_as_phase = 2 * np.pi * combined_distortion / wave.wavelength
-        return np.exp(1.0j * opd_as_phase)
+        if units == 'meters':
+            return combined_distortion
+        elif units == 'waves':
+            return combined_distortion / wave.wavelength
+        else:
+            raise ValueError("'units' argument must be 'meters' or 'waves'")
 
 class ZernikeWFE(WavefrontError):
     """
@@ -141,53 +218,158 @@ class ZernikeWFE(WavefrontError):
         kwargs.update({'name': name})
         super(ZernikeWFE, self).__init__(**kwargs)
 
-    def getPhasor(self, wave):
-        # getPhasor specified to accept wave as float wavelength or
-        # Wavefront instance:
-        if not isinstance(wave, Wavefront):
-            wave = Wavefront(wavelength=wave)
-
+    @_accept_wavefront_or_meters
+    def get_opd(self, wave, units='meters'):
+        """
+        Parameters
+        ----------
+        wave : poppy.Wavefront (or float)
+            Incoming Wavefront before this optic to set wavelength and
+            scale, or a float giving the wavelength in meters
+            for a temporary Wavefront used to compute the OPD.
+        units : 'meters' or 'waves'
+            Coefficients are supplied in `ZernikeWFE.coefficients` as
+            meters of OPD, but the resulting OPD can be converted to
+            waves based on the `Wavefront` wavelength or a supplied
+            wavelength value.
+        """
         rho, theta = _wave_to_rho_theta(wave, self.radius)
 
         # the Zernike optic, being normalized on a circle, is
         # implicitly also a circular aperture:
-        aperture_intensity = self.circular_aperture.getPhasor(wave)
+        aperture_intensity = self.circular_aperture.get_transmission(wave)
+
+        pixelscale_m = wave.pixelscale.to(u.meter/u.pixel).value
 
         combined_zernikes = np.zeros(wave.shape, dtype=np.float64)
         for j, k in enumerate(self.coefficients, start=1):
             combined_zernikes += k * zernike.cached_zernike1(
                 j,
                 wave.shape,
-                wave.pixelscale,
+                pixelscale_m,
                 self.radius,
-                mask_outside=False,
-                outside=0.0
+                outside=0.0,
+                noll_normalize=True
             )
 
         combined_zernikes *= aperture_intensity
+        if units == 'waves':
+            combined_zernikes /= wave.wavelength
+        return combined_zernikes
 
-        opd_as_phase = 2 * np.pi * combined_zernikes / wave.wavelength
-        zernike_wfe_phasor = np.exp(1.j * opd_as_phase)
-        return zernike_wfe_phasor
+class SineWaveWFE(WavefrontError):
+    """ A single sine wave ripple across the optic
+
+    Specified as a a spatial frequency in cycles per meter, an optional phase offset in cycles,
+    and an amplitude.
+
+    By default the wave is oriented in the X direction.
+    Like any AnalyticOpticalElement class, you can also specify a rotation parameter to
+    rotate the direction of the sine wave.
 
 
-
-class StatisticalOpticalElement(WavefrontError):
+    (N.b. we intentionally avoid letting users specify this in terms of a spatial wavelength
+    because that would risk potential ambiguity with the wavelength of light.)
     """
-    A statistical realization of some wavefront error, computed on a fixed grid. 
+    @utils.quantity_input(spatialfreq=1./u.meter, amplitude=u.meter)
+    def  __init__(self,  name='Sine WFE', spatialfreq=1.0, amplitude=1e-6, phaseoffset=0, **kwargs):
+        super(WavefrontError, self).__init__(name=name, **kwargs)
 
-    This is in a sense like an AnalyticOpticalElement, in that it is in theory computable on any grid,
-    but once computed it has some fixed sampling that cannot easily be changed. 
+        self.sine_spatial_freq = spatialfreq
+        self.sine_phase_offset = phaseoffset
+        # note, can't call this next one 'amplitude' since that's already a property
+        self.sine_amplitude = amplitude
+
+    @_accept_wavefront_or_meters
+    def get_opd(self, wave, units='meters'):
+        """
+        Parameters
+        ----------
+        wave : poppy.Wavefront (or float)
+            Incoming Wavefront before this optic to set wavelength and
+            scale, or a float giving the wavelength in meters
+            for a temporary Wavefront used to compute the OPD.
+        units : 'meters' or 'waves'
+            Coefficients are supplied as meters of OPD, but the
+            resulting OPD can be converted to
+            waves based on the `Wavefront` wavelength or a supplied
+            wavelength value.
+        """
+
+        y, x = self.get_coordinates(wave)  # in meters
+
+        opd = self.sine_amplitude.to(u.meter).value * \
+                np.sin( 2*np.pi * (x * self.sine_spatial_freq.to(1/u.meter).value + self.sine_phase_offset))
+
+        if units == 'waves':
+            opd /= wave.wavelength.to(u.meter).value
+        return opd
+
+
+class StatisticalOpticalElement(OpticalElement):
+    """
+    A statistical realization of some wavefront error, computed on a fixed grid.
+
+    This is in a sense like an AnalyticOpticalElement, in that it is computed on some arbitrary grid,
+    but once computed it has a fixed sampling that cannot easily be changed.
 
     """
-    def __init__(self, name=None,  seed=None,  **kwargs):
-        if name is None: name = "Zernikes over a circle of radius= %.1f m" % size
+
+    @utils.quantity_input(grid_size=u.meter)
+    def __init__(self, name="Statistical WFE model",  seed=None,  npix=512, grid_size=1*u.meter, **kwargs):
         OpticalElement.__init__(self,name=name,**kwargs)
 
-        self._RandomState = numpy.random.RandomState(seed=seed)
+        self.npix = npix
+        self.grid_size=grid_size
+        self.pixelscale= grid_size/(npix*u.pixel)
+
+        self.randomize(seed=seed)
+        self.generate_opd()
+        self.generate_transmission()
 
     def randomize(self,seed=None):
         """ Create new random instance """
+        self._RandomState = np.random.RandomState(seed=seed)
+
+
+    def generate_opd(self):
+        # This should be overridden by the subclass
+        self.opd = np.zeros( (self.npix, self.npix) )
+
+    def generate_transmission(self):
+        # This may be overridden by the subclass, if desired
+        self.amplitude = np.ones( (self.npix, self.npix) )
+
+
+    def structure_fn(self,npoints=None):
+        """ Calculate two-point correlation function for WFE
+
+        simple, brute-force and slightly hacky calculation just using
+		shifts in the 4 cardinal directions.
+        """
+        if npoints is None:
+            npoints = int(self.npix/2)
+
+        array = self.opd
+
+        result=np.zeros((npoints+1))
+        for i in range(1,npoints+1):
+            for shift,axis in ((1,0),(-1,0),(1,1),(-1,1)):
+                result[i]=((array-np.roll(array,shift*i,axis=axis))**2).mean()
+            result[i]/4
+        return result
+
+    def plot_structure_fn(self,ax=None):
+
+        sf = self.structure_fn()
+
+
+        if ax is None:
+            ax = plt.gca()
+        ax.loglog(sf, label = "Structure function of OPD")
+
+        x=np.arange(40)
+        ax.plot(x,sf[1]*(x/x[1])**(5./3),ls=":", label="Theoretical Kolmogorov")
 
 
 class KolmogorovWFE(StatisticalOpticalElement):
@@ -199,10 +381,43 @@ class KolmogorovWFE(StatisticalOpticalElement):
     http://optics.nuigalway.ie/people/chris/chrispapers/Paper066.pdf
 
     """
-    def __init__(self, name=None,  seed=None, r0=15, L_inner=0.001, L_outer=10,  **kwargs):
-        if name is None: name = "Zernikes over a circle of radius= %.1f m" % size
+    @utils.quantity_input(r0=u.meter)
+    def __init__(self, name="Kolmogorov WFE",  r0=0.1*u.meter, **kwargs):
+        self.r0 = r0
         StatisticalOpticalElement.__init__(self,name=name,**kwargs)
-        raise NotImplementedError('Not implemented yet')
+
+
+    def generate_opd(self):
+
+        # Based on IDL code in fgui.pro by Tuan Do, used by permission
+        r0= self.r0.to(u.meter).value
+        shape= (self.npix, self.npix)
+        pixelscale= self.pixelscale.to(u.meter/u.pixel).value
+
+        # set up indices arrays
+        dk = 1./(np.asarray(shape)*pixelscale)
+        y,x = np.indices(shape)
+        y=(y-shape[0]/2.)*dk[0]
+        x=(x-shape[1]/2.)*dk[1]
+        ksq=x**2+y**2
+        ksq[shape[0]/2,shape[1]/2]=1
+
+        # calculate Kolmogorov PSD
+        psd=0.023*(2*np.pi)**(5./6) * r0**(-5./6) * ksq**(-11/6) * np.sqrt(dk[0]*dk[1])
+        psd[shape[0]/2,shape[1]/2]=0  # set piston to 0
+
+        # Generate complex independent, Gaussian, random numbers with zero mean and unit variance
+        w_r=np.random.normal(size=shape)
+        w_i=np.random.normal(size=shape)
+        w=w_r + np.complex(0,1)*w_i
+
+        #multiply by sqrt of PSD
+        wf=w*np.sqrt(psd)
+        self.opd = np.fft.fft2(np.fft.fftshift(wf)).real
+
+
+
+
 
 class PowerSpectralDensityWFE(StatisticalOpticalElement):
     """ Compute WFE from a power spectral density. 

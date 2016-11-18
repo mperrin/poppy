@@ -1,4 +1,4 @@
-Overview
+Overview 
 ====================
 
 The module ``poppy`` implements an object-oriented system for modeling physical optics
@@ -31,9 +31,16 @@ appropriate weights for multiwavelength computations through a spectral bandpass
 Given a specified instrument configuration, an appropriate `~poppy.OpticalSystem` is generated, the appropriate wavelengths and weights are calculated based on the bandpass filter and target source spectrum, the PSF is calculated, and optionally is then convolved with a blurring kernel due to pointing jitter.  For instance, all of the WebbPSF instruments are implemented by subclassing `poppy.Instrument`.
 
 
-``poppy`` presently assumes that optical propagation can be modeled using Fraunhofer diffraction (far-field), such that
-the relationship between pupil and image plane optics is given by two-dimensional Fourier transforms. Fresnel propagation is
-not currently supported. 
+.. _fraunhofer:
+
+Fraunhofer domain calculations
+================================
+
+``poppy``'s default mode assumes that optical propagation can be modeled using
+Fraunhofer diffraction (the "far field" approximation), such that the
+relationship between pupil and image plane optics is given by two-dimensional
+Fourier transforms.  (Fresnel propagation is also available, :ref:`with slightly
+different syntax <fresnel>`.)
 
 Two different algorithmic flavors of Fourier transforms are used in Poppy. The
 familiar FFT algorithm is used for transformations between pupil and image
@@ -75,7 +82,7 @@ Once instantiated, any analytic function can be displayed on screen, sampled ont
     >>> ap.display(what='both')                    # display both intensity and phase components
 
     >>> values = ap.sample(npix=512)               # evaluate on 512 x 512 grid
-    >>> ap.toFITS('test_circle.fits', npix=1024)   # write to disk as a FITS file with higher sampling
+    >>> ap.to_fits('test_circle.fits', npix=1024)  # write to disk as a FITS file with higher sampling
 
 
 When sampling an `~poppy.AnalyticOpticalElement`, you may choose to obtain various representations of its action on a complex wavefront, including the amplitude transmission; intensity transmission; or phase delay in waves, radians, or meters. 
@@ -88,7 +95,9 @@ Optical Plane Types
 -------------------------
 
 
-An `~poppy.OpticalSystem` consists of a series of two or more planes, of various types. The allowed types of planes are:
+An `~poppy.OpticalSystem` consists of a series of two or more planes, of various types. 
+The plane type of a given `OpticalElement` is encoded by its `.planetype` attribute. 
+The allowed types of planes are:
 
  * **Pupil** planes, which have spatial scale measured in meters. For instance
    a telescope could have a diameter of 1 meter and be represented inside an
@@ -115,34 +124,37 @@ An `~poppy.OpticalSystem` consists of a series of two or more planes, of various
    intermediate powered optics are not represented as such.  Rotations can take
    place after either an image or pupil plane. 
 
-POPPY thus is capable of representing a limited subset of optical systems,
-namely those which are well modeled by the Fraunhofer (far-field)
-approximation. If you need to model full physical propagation through
-intermediate optics, including Fresnel or Talbot effects, you should consider
-using another tool. (It is possible that POPPY will eventually be extended to
-include Fresnel propagation, but so far it has not yet become an immediate
-priority.)
-
-
-The plane type of a given optic is encoded by its `.planetype` attribute. 
+POPPY thus is capable of representing a moderate subset of optical imaging systems, 
+though it is not intended as a substitute for a professional optics design package
+such as Zemax or Code V for design of full optical systems. 
 
 
 
 Defining your own custom optics
 ----------------------------------
 
-All `~poppy.OpticalElement` classes must have a method `~poppy.OpticalElement.getPhasor` which returns the complex phasor representing that optic, sampled appropriately for a given input `~poppy.Wavefront` and at the appropriate wavelength. To define your own custom OpticalElements, you can:
+All `~poppy.OpticalElement` classes must have methods
+`~poppy.OpticalElement.get_transmission` and `~poppy.OpticalElement.get_opd`
+which returns the amplitude transmission and optical path delay representing
+that optic, sampled appropriately for a given input `~poppy.Wavefront` and at
+the appropriate wavelength. These are combined together to calculate the
+complex phasor which is applied to the wavefront's electric field.  To define
+your own custom OpticalElements, you can:
 
-1. Subclass `~poppy.AnalyticOpticalElement` and write a suitable `getPhasor` function to describe the properties of your optic, 
-2. Combine two or more existing `~poppy.AnalyticOpticalElement` instances as part of a `~poppy.CompoundAnalyticOptic`, or
-3. Generate suitable transmission and phase (optical path difference) arrays using some other tool, save them as FITS files with appropriate keywords, and instantiate them as an `~poppy.FITSOpticalElement`
+1. Subclass `~poppy.AnalyticOpticalElement` and write suitable function(s) to
+   describe the properties of your optic, 
+2. Combine two or more existing `~poppy.AnalyticOpticalElement` instances as
+   part of a `~poppy.CompoundAnalyticOptic`, or
+3. Generate suitable transmission and optical path difference arrays
+   using some other tool, save them as FITS files with appropriate keywords,
+   and instantiate them as an `~poppy.FITSOpticalElement`
 
 
 FITSOpticalElements have separate attributes for amplitude and phase components, which may be read separately from 2 FITS files:
 
   * `amplitude`, the electric field amplitude transmission of the optic
-  * `opd`, the Optical Path Difference (phase delay) of the optic
+  * `opd`, the optical path difference of the optic
 
-AnalyticOpticalElements only need to implement the `getPhasor()` function, which allows more flexibility for amplitude transmission or phase delay to vary with wavelength or other properties. 
+Defining functions on a AnalyticOpticalElement subclass allows more flexibility for amplitude transmission or OPDs to vary with wavelength or other properties. 
 
 See :ref:`extending` for more details and examples.

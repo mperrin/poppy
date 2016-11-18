@@ -34,8 +34,12 @@ from astropy_helpers.git_helpers import get_git_devstr
 from astropy_helpers.version_helpers import generate_version_py
 
 # Get some values from the setup.cfg
-from distutils import config
-conf = config.ConfigParser()
+try:
+    from ConfigParser import ConfigParser
+except ImportError:
+    from configparser import ConfigParser
+
+conf = ConfigParser()
 conf.read(['setup.cfg'])
 metadata = dict(conf.items('metadata'))
 
@@ -57,7 +61,7 @@ LONG_DESCRIPTION = ast.get_docstring(module_ast)
 builtins._ASTROPY_PACKAGE_NAME_ = PACKAGENAME
 
 # VERSION should be PEP386 compatible (http://www.python.org/dev/peps/pep-0386)
-VERSION = '0.3.6.dev'
+VERSION = '0.6.0rc1'
 
 # Indicates if this version is a release version
 RELEASE = 'dev' not in VERSION
@@ -104,18 +108,23 @@ for root, dirs, files in os.walk(PACKAGENAME):
                     os.path.relpath(root, PACKAGENAME), filename))
 package_info['package_data'][PACKAGENAME].extend(c_files)
 
+install_requires_packages = [
+      'six>=1.7.3',
+      'numpy>=1.8.0',
+      'scipy>=0.14.0',
+      'matplotlib>=1.3.0',
+      'astropy>=1.0.1',
+]
+
+# Python 3.4.x backports
+if sys.version_info[:2] < (3, 4):
+    install_requires_packages.append('enum34>=1.0.4')
+
 setup(name=PACKAGENAME,
       version=VERSION,
       description=DESCRIPTION,
       scripts=scripts,
-      setup_requires=['numpy>=1.8.0', 'astropy>=1.0.1'],
-      install_requires=[
-          'six>=1.7.3',
-          'numpy>=1.8.0',
-          'scipy>=0.14.0',
-          'matplotlib>=1.3.0',
-          'astropy>=1.0.1'
-      ],
+      install_requires=install_requires_packages,
       provides=[PACKAGENAME],
       author=AUTHOR,
       author_email=AUTHOR_EMAIL,
