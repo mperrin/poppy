@@ -2,7 +2,7 @@ import numpy as np
 import poppy
 import matplotlib.pyplot as plt
 import astropy.units as u
-
+import astropy.io.fits as fits
 from .poppy_core import OpticalElement, Detector, Wavefront, PlaneType, _PUPIL, _IMAGE, _RADIANStoARCSEC
 from .optics import CircularAperture
 from .utils import measure_centroid
@@ -44,7 +44,6 @@ class subapertures(poppy.OpticalElement):
         """
         
         def __init__(self,
-                     dimensions = (2,2),
                      optic_array = np.array([[CircularAperture(radius=2.,planetype=PlaneType.pupil),
                                               CircularAperture(radius=2.,planetype=PlaneType.pupil)],
                                     [CircularAperture(radius=2.,planetype=PlaneType.pupil),
@@ -55,7 +54,8 @@ class subapertures(poppy.OpticalElement):
                      overwrite_inputwavefront=False,
                      display_intermediates=False,
                      optical_system=None,
-                 **kwargs):
+                    **kwargs):
+            dimensions = optic_array.shape
             self.n_apertures = dimensions[0]*dimensions[1]
             
             self.optic_array=optic_array
@@ -251,3 +251,71 @@ class subapertures(poppy.OpticalElement):
                         wf.wavefront[lower_x:upper_x,lower_y:upper_y] = np.nan
                     else:
                         wf.wavefront[lower_x:upper_x,lower_y:upper_y] = sub_wf.wavefront 
+
+class SH_WFS(subapertures):
+    """
+        Shack-Hartmann Wavefront Sensor Class
+    """
+
+    def __init__(self,lenslet_pitch = 300*u.um,
+                             lenslet_fl = 14.2*u.mm,
+                             pixel_pitch = 2.2*u.um/u.pix,
+                             n_lenslets=12,
+                             circular=False,
+                             **kwargs
+                             ):
+        
+        self.lenslet_pitch=lenslet_pitch
+        self.lenslet_fl=lenslet_fl
+        self.pixel_pitch=pixel_pitch
+        self.r_lenslet=self.lenslet_pitch/2.
+        if circular:
+            ap_keywords={"size":self.lenslet_pitch,"planetype":PlaneType.pupil}
+            aperture=poppy.CircularAperture(ap_keywords)
+            #aperturekeywords={"radius":self.r_lenslet}
+        else:
+            ap_keywords={"size":self.lenslet_pitch,"planetype":PlaneType.pupil}
+            aperture=poppy.SquareAperture(ap_keywords)
+        optic_array = np.array([[aperture,
+                                              aperture],
+                                    [aperture,
+                                    aperture]])
+        
+        #expand the array
+        if n_lenslets/2 % 2 !=0:
+            raise ValueError("aperture replication only works for even numbers of apertures")
+        
+        big_optic_array=optic_array.repeat(n_lenslets/2.,axis=0).repeat(n_lenslets/2.,axis=1)
+
+        subapertures.__init__(self,
+                                  optic_array=big_optic_array,
+                                  **kwargs)
+
+    def append_header(self,HDU):
+         HDU.header['SH_units']='meters'
+         HDU.header['name']=self.name
+         HDU.header['SH_pitch'] = self.lenslet_pitch.to(u.m).value
+         HDU.header['SH_fl'] = self.lenslet_fl.to(u.m).value
+         HDU.header['DETpitch'] = self.pixel_pitch.to(u.m/u.pix).value
+         return HDU
+
+    def calculate_centroid_requirement(self, min_WFE):
+        """
+          centroid 
+        """
+        if (min_WFE.decompose().unit != u.m):
+             raise ValueError("minimum wavefront error must be in units of length")
+        centroid = min_WFE * self.lenslet_fl/self.lenslet_pitch/self.pixel_pitch
+        return centroid
+    @property
+    def pix_lenslet(self):
+        return self.lenslet_pitch/self.pixel_pitch
+    @property
+    def max_WFE(self):
+        """
+        returns the maximum wavefront error detectable for ideal lenslet before the spot crosses
+        into the neighboring lenslet
+
+        """
+        _log.warn("This max wavefront error ignores lenslet aberrations")
+        return  1.0/self.lenslet_fl*self.lenslet_pitch**2/2.0
