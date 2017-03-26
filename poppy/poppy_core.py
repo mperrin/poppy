@@ -290,10 +290,12 @@ class Wavefront(object):
             else:
                 outFITS[0].header['FOV_X'] = (fov_arcsec[1], 'Field of view in arcsec (full array), X direction')
                 outFITS[0].header['FOV_Y'] = (fov_arcsec[0], 'Field of view in arcsec (full array), Y direction')
+                outFITS[0].header['PIXUNIT'] = 'arcsecond'
+
         else:
             outFITS[0].header['PIXELSCL'] = (self.pixelscale.to(u.meter/u.pixel).value, 'Pixel scale in meters/pixel')
             outFITS[0].header['DIAM'] =  (self.diam.to(u.meter).value, 'Pupil diameter in meters (not incl padding)')
-
+            outFITS[0].header['PIXUNIT'] = 'meter'
         for h in self.history:
             outFITS[0].header.add_history(h)
 
@@ -2273,8 +2275,8 @@ class OpticalElement(object):
                 lx,ly=resampled_amplitude.shape
                 #crop down to match size of wavefront:
                 lx_w,ly_w = wave.amplitude.shape
-                border_x = np.abs(np.floor((lx-lx_w)/2))
-                border_y = np.abs(np.floor((ly-ly_w)/2))
+                border_x = np.abs(lx-lx_w) // 2
+                border_y = np.abs(ly-ly_w) // 2
                 if (self.pixelscale*self.amplitude.shape[0] < wave.pixelscale*wave.amplitude.shape[0]) or (self.pixelscale*self.amplitude.shape[1] < wave.pixelscale*wave.amplitude.shape[0]):
                     #raise ValueError("Optic is smaller than input wavefront")
                     _log.warn("Optic"+str(np.shape(resampled_opd))+" is smaller than input wavefront"+str([lx_w,ly_w])+", will attempt to zero-pad the rescaled array")
@@ -2744,10 +2746,10 @@ class FITSOpticalElement(OpticalElement):
             if pixelscale is None and self.planetype is None:
                 # we don't know which keywords might be present yet, so check for both keywords
                 # in both header objects (at least one must be non-None at this point!)
-                _log.debug("  Looking for 'PUPLSCAL' or 'PIXSCALE' in FITS headers to set "
+                _log.debug("  Looking for 'PUPLSCAL' or 'PIXSCALE' or 'PIXELSCL' in FITS headers to set "
                            "pixel scale")
                 keyword, self.pixelscale = _find_pixelscale_in_headers(
-                    ('PUPLSCAL', 'PIXSCALE'),
+                    ('PUPLSCAL', 'PIXSCALE','PIXELSCL'),
                     (self.amplitude_header, self.opd_header)
                 )
                 if keyword == 'PUPLSCAL':
@@ -2758,7 +2760,7 @@ class FITSOpticalElement(OpticalElement):
                 # the planetype tells us which header keyword to check when a keyword is
                 # not provided (PIXSCALE for image planes)...
                 _, self.pixelscale = _find_pixelscale_in_headers(
-                    ('PIXSCALE',),
+                    ('PIXSCALE','PIXELSCL'),
                     (self.amplitude_header, self.opd_header)
                 )
             elif pixelscale is None and self.planetype == _PUPIL:
