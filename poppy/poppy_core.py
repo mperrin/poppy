@@ -517,7 +517,6 @@ class Wavefront(object):
 
             plot_axes = [ax]
             to_return = ax
-
         elif what == 'both':
             ax1 = plt.subplot(nrows, 2, (row * 2) - 1)
             plt.imshow(amp, extent=extent, cmap=cmap_inten, norm=norm_inten, origin='lower')
@@ -538,8 +537,29 @@ class Wavefront(object):
 
             plot_axes = [ax1, ax2]
             to_return = (ax1, ax2)
+        elif what == 'amplitude':
+            if ax is None:
+                ax = plt.subplot(nr, nc, int(row))
+
+            utils.imshow_with_mouseover(
+                amp,
+                ax=ax,
+                extent=extent,
+                norm=norm_inten,
+                cmap=cmap_inten,
+                origin='lower'
+            )
+            if title is None:
+                title = wrap_lines_title("Amplitude " + self.location)
+            ax.set_title(title)
+            ax.set_xlabel(unit)
+            if colorbar:
+                plt.colorbar(ax.images[0], orientation='vertical', shrink=0.8)
+            plot_axes = [ax]
+            to_return = ax
         else:
-            raise ValueError("Invalid value for what to display; must be 'amplitude', 'phase', or 'both'.")
+            raise ValueError("Invalid value for what to display; must be: "
+                             "'intensity', 'amplitude', 'phase', or 'both'.")
 
         # now apply axes cropping and/or overplots, if requested.
         for ax in plot_axes:
@@ -2580,11 +2600,12 @@ class FITSOpticalElement(OpticalElement):
                 if isinstance(transmission,six.string_types):
                     self.amplitude_file = transmission
                     self.amplitude, self.amplitude_header = fits.getdata(self.amplitude_file, header=True)
+                    self.amplitude = self.amplitude.astype('=f8') # ensure native byte order, see #213
                     if self.name=='unnamed optic': self.name='Optic from '+self.amplitude_file
                     _log.info(self.name+": Loaded amplitude transmission from "+self.amplitude_file)
                 elif isinstance(transmission,fits.HDUList):
                     self.amplitude_file='supplied as fits.HDUList object'
-                    self.amplitude = transmission[0].data.copy()
+                    self.amplitude = transmission[0].data.astype('=f8') # ensure native byte order, see #213
                     self.amplitude_header = transmission[0].header.copy()
                     if self.name=='unnamed optic': self.name='Optic from fits.HDUList object'
                     _log.info(self.name+": Loaded amplitude transmission from supplied fits.HDUList object")
@@ -2614,7 +2635,7 @@ class FITSOpticalElement(OpticalElement):
             elif isinstance(opd, fits.HDUList):
                 # load from fits HDUList
                 self.opd_file='supplied as fits.HDUList object'
-                self.opd = opd[0].data.copy()
+                self.opd = opd[0].data.astype('=f8')
                 self.opd_header = opd[0].header.copy()
                 if self.name=='unnamed optic': self.name='OPD from supplied fits.HDUList object'
                 _log.info(self.name+": Loaded OPD from supplied fits.HDUList object")
@@ -2622,6 +2643,7 @@ class FITSOpticalElement(OpticalElement):
                 # load from regular FITS filename
                 self.opd_file=opd
                 self.opd, self.opd_header = fits.getdata(self.opd_file, header=True)
+                self.opd = self.opd.astype('=f8')
                 if self.name=='unnamed optic': self.name='OPD from '+self.opd_file
                 _log.info(self.name+": Loaded OPD from "+self.opd_file)
 
@@ -2630,6 +2652,7 @@ class FITSOpticalElement(OpticalElement):
                 self.opd_file = opd[0]
                 self.opd_slice = opd[1]
                 self.opd, self.opd_header = fits.getdata(self.opd_file, header=True)
+                self.opd = self.opd.astype('=f8')
                 self.opd = self.opd[self.opd_slice, :,:]
                 if self.name=='unnamed optic': self.name='OPD from %s, plane %d' % (self.opd_file, self.opd_slice)
                 _log.info(self.name+": Loaded OPD from  %s, plane %d" % (self.opd_file, self.opd_slice) )
@@ -2743,6 +2766,11 @@ class FITSOpticalElement(OpticalElement):
                             return keyword, header[keyword]
                 raise LookupError(_MISSING_PIXELSCALE_MSG.format(', '.join(keywords)))
 
+            # The following logic is convoluted for historical back compatibility.
+            # All new files should use PIXELSCL. But we still allow reading in
+            # older files with PIXSCALE or PUPLSCAL.
+            # This code can probably be simplified.
+
             if pixelscale is None and self.planetype is None:
                 # we don't know which keywords might be present yet, so check for both keywords
                 # in both header objects (at least one must be non-None at this point!)
@@ -2760,13 +2788,13 @@ class FITSOpticalElement(OpticalElement):
                 # the planetype tells us which header keyword to check when a keyword is
                 # not provided (PIXSCALE for image planes)...
                 _, self.pixelscale = _find_pixelscale_in_headers(
-                    ('PIXSCALE','PIXELSCL'),
+                    ('PIXELSCL', 'PIXSCALE'),
                     (self.amplitude_header, self.opd_header)
                 )
-            elif pixelscale is None and self.planetype == _PUPIL:
+            elif pixelscale is None and (self.planetype == _PUPIL or self.planetype == _INTERMED):
                 # ... likewise for pupil planes
                 _, self.pixelscale = _find_pixelscale_in_headers(
-                    ('PUPLSCAL',),
+                    ('PIXELSCL', 'PUPLSCAL',),
                     (self.amplitude_header, self.opd_header)
                 )
             elif isinstance(pixelscale, six.string_types):
