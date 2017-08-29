@@ -103,7 +103,10 @@ def str_zernike(n, m):
 
 
 def noll_indices(j):
-    """Convert from 1-D to 2-D indexing for Zernikes or Hexikes.
+    """Convert from 1-D to 2-D indexing for Zernikes, using the Noll ordering.
+
+    Note that this starts at 1, i.e. noll_indices(1) = Piston, and
+    noll_indices(0) is undefined.
 
     Parameters
     ----------
@@ -149,6 +152,135 @@ def noll_indices(j):
 
     _log.debug("J=%d:\t(n=%d, m=%d)" % (j, n, m))
     return n, m
+
+def wyant_indices(w, verbose=False, return_all=False):
+    """Zernike polynomial indices, following the Wyant or so-called Fringe ordering.
+
+    Implemented via a simple lookup table vs. published references.
+
+    Note that this starts at zero, i.e. wyant_indices(0) = Piston.
+    Not all authors seem to agree on this, so be careful!
+
+    See:
+    Wyant and Creath, "Basic Wavefront Aberration Theory for Optical Metrology",
+    Chapter 1
+    avaiable from: https://wp.optics.arizona.edu/jcwyant/wp-content/uploads/sites/13/2016/08/03-BasicAberrations_and_Optical_Testing.pdf
+
+    http://wyant.optics.arizona.edu/zernikes/zernikes.htm
+    http://www.telescope-optics.net/zernike_expansion_schemes.htm
+    """
+
+    if w>35:
+        raise NotImplementedError("Not sure how to do Wyant indices above 35")
+
+    # Does there exist an elegant algorithmic way to do this?
+    nm_table = [(0,0),
+               (1,1),
+               (1,-1),
+               (2,0),
+               (2,2),
+               (2,-2),
+               (3,1),
+               (3,-1),
+               (4,0),
+               (3,3),
+               (3,-3),
+               (4,2),
+               (4,-2),
+               (5,1),
+               (5,-1),
+               (6,0),
+               (4,4),
+               (4,-4),
+               (5,3),
+               (5,-3),
+               (6,2),
+               (6,-2),
+               (7,1),
+               (7,-1),
+               (8,0),
+               (5,5),
+               (5,-5),
+               (6,4),
+               (6,-4),
+               (7,3),
+               (7,-3),
+               (8,2),
+               (8,-2),
+               (9,1),
+               (9,-1),
+               (10,0)]
+    n,m = nm_table[w]
+
+    # calculate some ancillary columns that are used in different
+    # references - this is mostly for cross checking with published tables.
+    # First, which row of the table we are in?  
+    # this is the so-called radial order, r
+    r = int(np.floor(np.sqrt(w)))
+
+    l = abs(m)
+    order = ((l+n)-1)
+    if order<0: order=0
+
+    if verbose:
+        print("w={}: r={}, order={}, l={}, n={}, m={}".format(w,r, order, l,n,m))
+
+    if return_all:
+        return (n,m,l,r,order)
+    else:
+        return (n,m)
+
+def plot_wyant_zernikes(nterms=36, vmax=2.5):
+    from poppy import conf
+    nrows = int(np.ceil(np.sqrt(nterms)))
+
+    fig, axes = plt.subplots(nrows,2*nrows+1, figsize=(16,8))
+    for i in range(nterms):
+        n,m,l,r, o=wyant_indices(i,verbose=False, return_all=True)
+        z = zernike(n,m)
+        ax = axes[r, int(i-np.floor(np.sqrt(i))**2)]
+        ax.imshow(z, cmap=conf.cmap_diverging, vmin=-vmax, vmax=vmax)
+        ax.set_title("Wyant Z {}".format(i))
+        ax.xaxis.set_visible(False)
+        ax.yaxis.set_visible(False)
+        ax.set_frame_on(False)
+
+    for a in axes.flatten():
+        if a.get_title()=='':
+            a.set_visible(False)
+
+    plt.tight_layout()
+
+
+def plot_noll_zernikes(nterms=36, vmax=2.5):
+    from poppy import conf
+    nrows = int(np.floor(np.sqrt(nterms*2)))
+
+    fig, axes = plt.subplots(nrows,nrows, figsize=(16,14))
+    row=-1
+    col=-1
+    for i in range(nterms):
+        n,m = noll_indices(i+1)
+        if n != row:
+            row=n
+            col=0
+        z = zernike(n,m)
+        ax = axes[row,col]
+        col=col+1
+        ax.imshow(z, cmap=conf.cmap_diverging, vmin=-vmax, vmax=vmax)
+        ax.set_title("Noll Z {}".format(i+1))
+        ax.xaxis.set_visible(False)
+        ax.yaxis.set_visible(False)
+        ax.set_frame_on(False)
+
+
+    for a in axes.flatten():
+        if a.get_title()=='':
+            a.set_visible(False)
+
+    plt.tight_layout()
+
+
 
 
 def R(n, m, rho):
@@ -444,6 +576,45 @@ def zernike_basis_faster(nterms=15, npix=512, outside=np.nan):
 
 
     return zern_output
+
+def zernike_basis_wyant(nterms=36, npix=512, outside=np.nan):
+    """ Returns a basis set of Zernike polynomials, following the Wyant ordering.
+
+    This is similar to zernike_basis_faster but returns the polynomials in a
+    different ordering.
+
+    Parameters
+    -----------
+    nterms : int, optional
+        Number of Zernike terms to return, starting from piston.
+        (e.g. ``nterms=1`` would return only the Zernike piston term.)
+        Default is 36
+    npix : int
+        Desired pixel diameter for circular pupil.
+    outside : float
+        Value for pixels outside the circular aperture (rho > 1).
+        Default is `np.nan`, but you may also find it useful for this to
+        be 0.0 sometimes.
+
+    """
+
+    # Implementation: Just build a (larger) basis using Noll
+    # ordering, and then pull out the appropriate slice in a 
+    # different order
+
+    # build a lookup table from Wyant to Noll ordering
+    nm_to_noll = dict()
+    wyant_to_noll = np.zeros(nterms, dtype=int)
+    for i in range(nterms*2):
+        # note, Noll indices start at 1, Wyant at 0
+        nm_n = poppy.zernike.noll_indices(i+1)
+        nm_to_noll[nm_n] = i
+    for i in range(nterms):
+        wyant_to_noll[i] = nm_to_noll[wyant_indices(i)]
+
+    basis_noll = poppy.zernike.zernike_basis_faster(nterms*2, npix=npix, outside=outside)
+    basis_wyant = basis_noll[wyant_to_noll]
+    return(basis_wyant)
 
 
 def hex_aperture(npix=1024, rho=None, theta=None, vertical=False, outside=0):
