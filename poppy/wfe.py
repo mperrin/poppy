@@ -24,7 +24,7 @@ from .poppy_core import Wavefront, OpticalElement, _PUPIL
 from . import zernike
 from . import utils
 
-__all__ = ['WavefrontError', 'ParameterizedWFE', 'ZernikeWFE', 'SineWaveWFE']
+__all__ = ['WavefrontError', 'ParameterizedWFE', 'ZernikeWFE', 'SineWaveWFE', 'KolmogorovWFE']
 
 def _accept_wavefront_or_meters(f):
     """Decorator that ensures the first positional method argument
@@ -316,30 +316,17 @@ class StatisticalOpticalElement(OpticalElement):
     """
 
     @utils.quantity_input(grid_size=u.meter)
-    def __init__(self, name="Statistical WFE model",  seed=None,  npix=512, grid_size=1*u.meter, **kwargs):
+    def __init__(self,
+                 name="Statistical WFE model",
+                 seed=None,
+                 **kwargs):
         OpticalElement.__init__(self,name=name,**kwargs)
 
-        self.npix = npix
-        self.grid_size=grid_size
-        self.pixelscale= grid_size/(npix*u.pixel)
-
         self.randomize(seed=seed)
-        self.generate_opd()
-        self.generate_transmission()
 
     def randomize(self,seed=None):
         """ Create new random instance """
         self._RandomState = np.random.RandomState(seed=seed)
-
-
-    def generate_opd(self):
-        # This should be overridden by the subclass
-        self.opd = np.zeros( (self.npix, self.npix) )
-
-    def generate_transmission(self):
-        # This may be overridden by the subclass, if desired
-        self.amplitude = np.ones( (self.npix, self.npix) )
-
 
     def structure_fn(self,npoints=None):
         """ Calculate two-point correlation function for WFE
@@ -390,6 +377,7 @@ class StatisticalOpticalElement(OpticalElement):
     def writeto(self, filename):
         raise NotImplementedError('Not implemented yet')
 
+
 class KolmogorovWFE(StatisticalOpticalElement):
     """
     See
@@ -399,43 +387,83 @@ class KolmogorovWFE(StatisticalOpticalElement):
     http://optics.nuigalway.ie/people/chris/chrispapers/Paper066.pdf
 
     """
-    @utils.quantity_input(r0=u.meter)
-    def __init__(self, name="Kolmogorov WFE",  r0=0.1*u.meter, **kwargs):
+    @utils.quantity_input(r0=u.meter, Cn2=u.meter**(-2/3), dz=u.meter)
+    def __init__(self, name="Kolmogorov WFE", r0=None, Cn2=None, dz=None, **kwargs):
+        
+        if r0 is None and not all(item is not None for item in [Cn2, dz]):
+            raise AttributeError('Either r0 or Cn2 and dz must be given.')
+        
         self.r0 = r0
+        self.Cn2 = Cn2
+        self.dz = dz
+        
         StatisticalOpticalElement.__init__(self,name=name,**kwargs)
-
-
-    def generate_opd(self):
-
+    
+    def get_opd(self, wave):
+        coordinates = wave.coordinates()
+        npix = coordinates[0].shape[0]
+        pixelscale = wave.pixelscale.to(u.m/u.pixel).value
+        dq = 2.0*np.pi/npix/pixelscale
+        q = np.fft.fftfreq(npix, d=pixelscale)*2.0*np.pi
+        qx, qy = np.meshgrid(q, q)
+        q = qx**2 + qy**2
+        q[0, 0] = np.inf
+        q = q**(-11.0/6.0)
+        r0 = self.FriedParameter(wave)
+        phi = 0.49*r0**(-5.0/3.0)*q
+        
+        z = np.random.uniform(size=npix)
+        Z = np.random.uniform(size=npix)
+        zz = np.sqrt(-2.0*np.log(z))*np.cos(2.0*np.pi*Z)
+        ZZ = np.sqrt(-2.0*np.log(z))*np.sin(2.0*np.pi*Z)
+        r = (zz + np.complex(0,1)*ZZ)*dq/np.sqrt(2.0)
+        
+        opd_FFT = r * np.sqrt(phi)
+        self.opd = np.fft.ifft2(opd_FFT)
+        
+        return self.opd
+    
+    def FriedParameter(self, wave):
+        if self.r0 is not None:
+            return self.r0.to(u.m)
+        elif all(item is not None for item in [self.Cn2, self.dz]):
+            return 0.185*(wave.wavelength.to(u.m)**2/self.Cn2.to(u.meter**(-2/3))/self.dz.to(u.m))**(3.0/5.0)
+        else:
+            return None
+    
+#    def generate_opd(self):
+#        dq = 2.0*np.pi/self.npix/self.pixelscale
+#        q = np.fft.fftfreq(self.npix, d=self.pixelscale)*2.0*np.pi
+#        
         # Based on IDL code in fgui.pro by Tuan Do, used by permission
-        r0= self.r0.to(u.meter).value
-        shape= (self.npix, self.npix)
-        pixelscale= self.pixelscale.to(u.meter/u.pixel).value
-
-        # set up indices arrays
-        dk = 1./(np.asarray(shape)*pixelscale)
-        y,x = np.indices(shape)
-        y=(y-shape[0]/2.)*dk[0]
-        x=(x-shape[1]/2.)*dk[1]
-        ksq=x**2+y**2
-        ksq[shape[0]/2,shape[1]/2]=1
-
-        # calculate Kolmogorov PSD
-        psd=0.023*(2*np.pi)**(5./6) * r0**(-5./6) * ksq**(-11/6) * np.sqrt(dk[0]*dk[1])
-        psd[shape[0]/2,shape[1]/2]=0  # set piston to 0
-
-        # Generate complex independent, Gaussian, random numbers with zero mean and unit variance
-        w_r=np.random.normal(size=shape)
-        w_i=np.random.normal(size=shape)
-        w=w_r + np.complex(0,1)*w_i
-
-        # multiply by sqrt of PSD
-        wf=w*np.sqrt(psd)
+#        r0= self.r0.to(u.meter).value
+#        shape= (self.npix, self.npix)
+#        pixelscale= self.pixelscale.to(u.meter/u.pixel).value
+#
+#        # set up indices arrays
+#        dk = 1./(np.asarray(shape)*pixelscale)
+#        y,x = np.indices(shape)
+#        y=(y-shape[0]/2.)*dk[0]
+#        x=(x-shape[1]/2.)*dk[1]
+#        ksq=x**2+y**2
+#        ksq[shape[0]/2,shape[1]/2]=1
+#
+#        # calculate Kolmogorov PSD
+#        psd=0.023*(2*np.pi)**(5./6) * r0**(-5./6) * ksq**(-11/6) * np.sqrt(dk[0]*dk[1])
+#        psd[shape[0]/2,shape[1]/2]=0  # set piston to 0
+#
+#        # Generate complex independent, Gaussian, random numbers with zero mean and unit variance
+#        w_r=np.random.normal(size=shape)
+#        w_i=np.random.normal(size=shape)
+#        w=w_r + np.complex(0,1)*w_i
+#
+#        # multiply by sqrt of PSD
+#        wf=w*np.sqrt(psd)
 
         # TODO : the normalization isn't right yet... This is yielding OPD arrays
         # with WFE in excess of 1 meter. So something is scaled wrong.
 
-        self.opd = np.fft.fft2(np.fft.fftshift(wf)).real
+#        self.opd = np.fft.fft2(np.fft.fftshift(wf)).real
 
 
 class PowerSpectralDensityWFE(StatisticalOpticalElement):
