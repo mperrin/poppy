@@ -400,6 +400,7 @@ class KolmogorovWFE(StatisticalOpticalElement):
         StatisticalOpticalElement.__init__(self,name=name,**kwargs)
     
     def get_opd(self, wave):
+        # create momenta
         coordinates = wave.coordinates()
         npix = coordinates[0].shape[0]
         pixelscale = wave.pixelscale.to(u.m/u.pixel).value
@@ -407,17 +408,26 @@ class KolmogorovWFE(StatisticalOpticalElement):
         q = np.fft.fftfreq(npix, d=pixelscale)*2.0*np.pi
         qx, qy = np.meshgrid(q, q)
         q = qx**2 + qy**2
-        q[0, 0] = np.inf
+        q[0, 0] = np.inf # this is to prevent the next line from raising an
+                         # error and is equivalent to a vanishing piston phase
         q = q**(-11.0/6.0)
+        
+        # get Fried parameter
+        # note: using a Fried parameter is not as flexible as using Cn2 only
+        # because one cannot use a more realistic spatial power spectrum
         r0 = self.FriedParameter(wave)
         phi = 0.49*r0**(-5.0/3.0)*q
         
+        # create random numbers
         z = np.random.uniform(size=npix)
         Z = np.random.uniform(size=npix)
         zz = np.sqrt(-2.0*np.log(z))*np.cos(2.0*np.pi*Z)
         ZZ = np.sqrt(-2.0*np.log(z))*np.sin(2.0*np.pi*Z)
         r = (zz + np.complex(0,1)*ZZ)*dq/np.sqrt(2.0)
         
+        # apply symmetry to random numbers
+        
+        # calculate OPD
         opd_FFT = r * np.sqrt(phi)
         self.opd = np.fft.ifft2(opd_FFT)
         
@@ -428,8 +438,8 @@ class KolmogorovWFE(StatisticalOpticalElement):
             return self.r0.to(u.m)
         elif all(item is not None for item in [self.Cn2, self.dz]):
             return 0.185*(wave.wavelength.to(u.m)**2/self.Cn2.to(u.meter**(-2/3))/self.dz.to(u.m))**(3.0/5.0)
-        else:
-            return None
+        else: # this should never not happen since I tested it already in init
+            raise AttributeError('Either r0 or Cn2 and dz must be given.')
     
 #    def generate_opd(self):
 #        dq = 2.0*np.pi/self.npix/self.pixelscale
