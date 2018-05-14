@@ -1,6 +1,7 @@
 from __future__ import (absolute_import, division, print_function, unicode_literals)
 
 import numpy as np
+import astropy.units as u
 
 from .. import poppy_core
 from .. import optics
@@ -86,3 +87,37 @@ def test_ParameterizedAberration():
 
     assert stddev < 1e-16, ("ParameterizedAberration disagrees with "
                             "ZernikeAberration! stddev {}".format(stddev))
+
+def test_KolmogorovWFE():
+    
+    # test Cn2 calculation from Fried parameter
+    Cn2 = 1e-14*u.m**(-2/3)
+    lam = 1064e-9*u.m
+    dz = 50.0*u.m
+    r0 = 0.185*(lam**2/Cn2/dz)**(3.0/5.0)
+    KolmogorovWFE = wfe.KolmogorovWFE(r0=r0, dz=dz)
+    Cn2_test = KolmogorovWFE.get_Cn2(lam)
+    assert(np.round(Cn2_test.value, 9) == np.round(Cn2.value, 9))
+    
+#    # test random number symmetry
+#    num_ensemble = 10
+#    npix = 128
+#    
+#    average = np.zeros((npix, npix, npix, npix), dtype=complex)
+#    for m in range(num_ensemble):
+#        # crate a realization
+#        a = KolmogorovWFE.rand_turbulent(npix)
+#        
+#        average = 0.0
+#        for l in range(npix):
+#            for lp in range(npix):
+#                for j in range(npix):
+#                    for jp in range(npix):
+#                        average[l ,lp, j, jp] = a[l, j]*np.conj(a[lp, jp])
+#                        if l == lp and j == jp:
+#                            average[l ,lp, j, jp] -= 1.0
+#    
+#    average /= num_ensemble
+    
+        
+        

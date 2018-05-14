@@ -379,101 +379,234 @@ class StatisticalOpticalElement(OpticalElement):
 
 
 class KolmogorovWFE(StatisticalOpticalElement):
+    """ A turbulent phase screen.
+    
+    This is an implementation of a turbulent phase screen as by the
+    Kolmogorov theory of turbulence.
+    
+    Parameters
+    -----------------
+    wave : wavefront object
+        Wavefront to calculate the phase screen for.
+
+    References
+    -------------------
+    For a general overview of the Kolmogorov theory, read
+    L. C. Andrews and R. L. Phillips, Laser Beam Propagation Through Random
+    Media, 2nd ed. (Society of Photo Optical, 2005).
+    
+    Other relevant references are mentioned in the respective functions.
     """
-    See
-
-    http://www.opticsinfobase.org/view_article.cfm?gotourl=http%3A%2F%2Fwww%2Eopticsinfobase%2Eorg%2FDirectPDFAccess%2F8E2A4176%2DED0A%2D7994%2DFB0AC49CECB235DF%5F142887%2Epdf%3Fda%3D1%26id%3D142887%26seq%3D0%26mobile%3Dno&org=
-
-    http://optics.nuigalway.ie/people/chris/chrispapers/Paper066.pdf
-
-    """
-    @utils.quantity_input(r0=u.meter, Cn2=u.meter**(-2/3), dz=u.meter)
-    def __init__(self, name="Kolmogorov WFE", r0=None, Cn2=None, dz=None, **kwargs):
+    
+    @utils.quantity_input(r0=u.meter, Cn2=u.meter**(-2/3), dz=u.meter, l0=u.meter, L0=u.meter)
+    def __init__(self, name="Kolmogorov WFE", r0=None, Cn2=None,
+                 dz=None, l0=None, L0=None, kind='Kolmogorov', **kwargs):
         
-        if r0 is None and not all(item is not None for item in [Cn2, dz]):
-            raise AttributeError('Either r0 or Cn2 and dz must be given.')
+        if dz is None and not all(item is not None for item in [r0, Cn2]):
+            raise AttributeError('To prepare a turbulent phase screen, \
+                                 dz and either Cn2 or r0 must be given.')
         
         self.r0 = r0
         self.Cn2 = Cn2
         self.dz = dz
+        self.l0 = l0
+        self.L0 = L0
+        self.kind = kind
         
-        StatisticalOpticalElement.__init__(self,name=name,**kwargs)
+        StatisticalOpticalElement.__init__(self, name=name, **kwargs)
     
     def get_opd(self, wave):
-        # create momenta
+        """ Returns an optical path difference for a turbulent phase screen.
+        
+        Parameters
+        -----------------
+        wave : wavefront object
+            Wavefront to calculate the phase screen for.
+    
+        References
+        -------------------
+        J. A. Fleck Jr, J. R. Morris, and M. D. Feit, Appl. Phys. 10, 129 (1976).
+        
+        E. M. Johansson and D. T. Gavel,
+        in Proc. SPIE, edited by J. B. Breckinridge
+        (International Society for Optics and Photonics, 1994), pp. 372–383.
+        
+        B. J. Herman and L. A. Strugala, in Proc. SPIE,
+        edited by P. B. Ulrich and L. E. Wilson
+        (International Society for Optics and Photonics, 1990), pp. 183–192.
+        
+        G. Gbur, J. Opt. Soc. Am. A 31, 2038 (2014).
+        
+        D. L. Knepp, Proc. IEEE 71, 722 (1983).
+        """
+        
         coordinates = wave.coordinates()
         npix = coordinates[0].shape[0]
-        pixelscale = wave.pixelscale.to(u.m/u.pixel).value
+        pixelscale = wave.pixelscale.to(u.m/u.pixel)
         dq = 2.0*np.pi/npix/pixelscale
-        q = np.fft.fftfreq(npix, d=pixelscale)*2.0*np.pi
-        qx, qy = np.meshgrid(q, q)
-        q = qx**2 + qy**2
-        q[0, 0] = np.inf # this is to prevent the next line from raising an
-                         # error and is equivalent to a vanishing piston phase
-        q = q**(-11.0/6.0)
         
-        # get Fried parameter
-        # note: using a Fried parameter is not as flexible as using Cn2 only
-        # because one cannot use a more realistic spatial power spectrum
-        r0 = self.FriedParameter(wave)
-        phi = 0.49*r0**(-5.0/3.0)*q
+        # create complex random numbers with required symmetry
+        a = self.rand_turbulent(npix)
         
-        # create random numbers
-        z = np.random.uniform(size=npix)
-        Z = np.random.uniform(size=npix)
-        zz = np.sqrt(-2.0*np.log(z))*np.cos(2.0*np.pi*Z)
-        ZZ = np.sqrt(-2.0*np.log(z))*np.sin(2.0*np.pi*Z)
-        r = (zz + np.complex(0,1)*ZZ)*dq/np.sqrt(2.0)
-        
-        # apply symmetry to random numbers
+        # get phase spectrum
+        Cn2 = self.get_Cn2(wave.wavelength)
+        phi = self.power_spectrum(Cn2, npix, pixelscale,
+                                  L0=self.L0, l0=self.l0, kind=self.kind)
         
         # calculate OPD
-        opd_FFT = r * np.sqrt(phi)
-        self.opd = np.fft.ifft2(opd_FFT)
+        # Note: Factor dq consequence of delta function having a unit
+        opd_FFT = dq*a*np.sqrt(2.0*np.pi*self.dz*phi)
+        opd = np.fft.ifft2(opd_FFT)
+        self.opd = opd.real
         
-        return self.opd
+        return opd.real
     
-    def FriedParameter(self, wave):
-        if self.r0 is not None:
-            return self.r0.to(u.m)
-        elif all(item is not None for item in [self.Cn2, self.dz]):
-            return 0.185*(wave.wavelength.to(u.m)**2/self.Cn2.to(u.meter**(-2/3))/self.dz.to(u.m))**(3.0/5.0)
-        else: # this should never not happen since I tested it already in init
-            raise AttributeError('Either r0 or Cn2 and dz must be given.')
+    @utils.quantity_input(wavelength=u.meter)
+    def get_Cn2(self, wavelength):
+        """ Returns the index-of-refraction structure constant (m^-2/3).
+        
+        Parameters
+        -----------------
+        wavelength : float
+            The wavelength (m).
+        
+        References
+        -------------------
+        B. J. Herman and L. A. Strugala, in Proc. SPIE,
+        edited by P. B. Ulrich and L. E. Wilson
+        (International Society for Optics and Photonics, 1990), pp. 183–192.
+        """
+        
+        if all(item is not None for item in [self.r0, self.dz]):
+            r0 = self.r0.to(u.m)
+            wavelength2 = wavelength.to(u.m)**2
+            return wavelength2/self.dz * (r0/0.185)**(-5.0/3.0)
+        elif self.Cn2 is not None:
+            return self.Cn2.to(u.m**(-2/3))
     
-#    def generate_opd(self):
-#        dq = 2.0*np.pi/self.npix/self.pixelscale
-#        q = np.fft.fftfreq(self.npix, d=self.pixelscale)*2.0*np.pi
-#        
-        # Based on IDL code in fgui.pro by Tuan Do, used by permission
-#        r0= self.r0.to(u.meter).value
-#        shape= (self.npix, self.npix)
-#        pixelscale= self.pixelscale.to(u.meter/u.pixel).value
-#
-#        # set up indices arrays
-#        dk = 1./(np.asarray(shape)*pixelscale)
-#        y,x = np.indices(shape)
-#        y=(y-shape[0]/2.)*dk[0]
-#        x=(x-shape[1]/2.)*dk[1]
-#        ksq=x**2+y**2
-#        ksq[shape[0]/2,shape[1]/2]=1
-#
-#        # calculate Kolmogorov PSD
-#        psd=0.023*(2*np.pi)**(5./6) * r0**(-5./6) * ksq**(-11/6) * np.sqrt(dk[0]*dk[1])
-#        psd[shape[0]/2,shape[1]/2]=0  # set piston to 0
-#
-#        # Generate complex independent, Gaussian, random numbers with zero mean and unit variance
-#        w_r=np.random.normal(size=shape)
-#        w_i=np.random.normal(size=shape)
-#        w=w_r + np.complex(0,1)*w_i
-#
-#        # multiply by sqrt of PSD
-#        wf=w*np.sqrt(psd)
-
-        # TODO : the normalization isn't right yet... This is yielding OPD arrays
-        # with WFE in excess of 1 meter. So something is scaled wrong.
-
-#        self.opd = np.fft.fft2(np.fft.fftshift(wf)).real
+    def rand_symmetrized(self, npix, sign):
+        """ Returns a real-valued random number array of shape (npix, npix)
+        with the symmetry required for a turbulent phase screen.
+        
+        Parameters
+        -----------------
+        npix : int
+            Number of pixels.
+        
+        sign : int
+            Sign of mirror symmetry. Must be either +1 or -1.
+        
+        References
+        -------------------
+        Eq. (65) in J. A. Fleck Jr, J. R. Morris, and M. D. Feit,
+        Appl. Phys. 10, 129 (1976).
+        """
+        
+        sign = float(sign)
+        
+        # create zero-mean, unit variance random numbers
+        a = np.random.normal(size=(npix, npix))
+        
+        # apply required symmetry
+        a[0, int(npix/2)+1:npix] = sign*a[0, 1:int(npix/2)][::-1]
+        a[int(npix/2)+1:npix, 0] = sign*a[1:int(npix/2), 0][::-1]
+        a[int(npix/2)+1:npix, int(npix/2)+1:npix] = sign*np.rot90(a[1:int(npix/2), 1:int(npix/2)], 2)
+        a[int(npix/2)+1:npix, 1:int(npix/2)] = sign*np.rot90(a[1:int(npix/2), int(npix/2)+1:npix], 2)
+        
+        # remove any overall phase resulting from the zero-frequency component
+        a[0, 0] = 0.0
+        
+        return a
+    
+    def rand_turbulent(self, npix):
+        """ Returns a complex-valued random number array of shape (npix, npix)
+        with the symmetry required for a turbulent phase screen.
+        
+        Parameters
+        -----------------
+        npix : int
+            Number of pixels.
+        
+        References
+        -------------------
+        Eq. (63) in J. A. Fleck Jr, J. R. Morris, and M. D. Feit,
+        Appl. Phys. 10, 129 (1976).
+        """
+        
+        # create real-valued random numbers with required symmetry
+        a = self.rand_symmetrized(npix, 1)
+        b = self.rand_symmetrized(npix, -1)
+        
+        # create complex-valued random number with required variance
+        c = (a + 1j*b)/np.sqrt(2.0)
+        
+        return c
+    
+    @utils.quantity_input(Cn2=u.meter**(-2/3), dz=u.meter, pixelscale=u.meter/u.pixel)
+    def power_spectrum(self, Cn2, npix, pixelscale,
+                       L0=None, l0=None, kind='Kolmogorov'):
+        """ Returns the spatial power spectrum.
+        
+        Parameters
+        -----------------
+        Cn2 : float
+            Index-of-refraction structure constant (m^-2/3).
+        
+        npix : int
+            Number of pixels.
+            
+        pixelscale : astropy quantity
+            The pixel scale (m/pixel).
+        
+        L0 : float
+            The outer scale of the turbulent eddies (m).
+        
+        l0 : float
+            The inner scale of the turbulent eddies (m).
+        
+        kind : string
+            The type of the power spectrum, must be one of 'Kolmogorov',
+            'Tatarski', 'van Karman', 'Hill'.
+        
+        References
+        -------------------
+        G. Gbur, J. Opt. Soc. Am. A 31, 2038 (2014).
+        
+        R. Frehlich, Appl. Opt. 39, 393 (2000).
+        """
+        
+        q = np.fft.fftfreq(npix, d=pixelscale.to(u.m/u.pixel))*2.0*np.pi
+        qx, qy = np.meshgrid(q, q)
+        
+        q2 = qx**2 + qy**2
+        if kind is 'van Karman':
+            k2 = qx**2 + qy**2
+            if L0 is not None:
+                q2 += 1.0/L0**2
+            else:
+                raise AttributeError('If van Karman type of turbulent phase \
+                                     screen is chosen, the outer scale L_0 \
+                                     must be provided.')
+        else:
+            q2[0, 0] = np.inf # this is to avoid a possible error message in the next line
+        
+        phi = 0.0330054*Cn2*q2**(-11.0/6.0)
+        
+        if kind is 'Tatarski' or kind is 'van Karman' or kind is 'Hill':
+            if l0 is not None:
+                if kind is 'Tatarski' or kind is 'van Karman':
+                    m = (5.92/l0)**2
+                    phi *= np.exp(-k2/m)
+                elif kind is 'Hill':
+                    m = np.sqrt(k2)*l0
+                    phi *= (1.0 + 0.70937*m + 2.8235*m**2
+                            - 0.28086*m**3 + 0.08277*m**4) * np.exp(-1.109*m)
+            else:
+                raise AttributeError('If van Karman, Hill, or Tatarski type \
+                                     of turbulent phase screen is chosen, the \
+                                     inner scale l_0 must be provided.')
+        
+        return phi
 
 
 class PowerSpectralDensityWFE(StatisticalOpticalElement):
