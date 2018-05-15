@@ -404,7 +404,7 @@ class KolmogorovWFE(StatisticalOpticalElement):
         
         self.r0 = r0
         self.Cn2 = Cn2
-        self.dz = dz
+        self.dz = dz.to(u.m)
         self.l0 = l0
         self.L0 = L0
         self.kind = kind
@@ -451,9 +451,10 @@ class KolmogorovWFE(StatisticalOpticalElement):
         # Note: Factor dq consequence of delta function having a unit
         opd_FFT = dq*a*np.sqrt(2.0*np.pi*self.dz*phi)
         opd = npix**2*np.fft.ifft2(opd_FFT)
-        self.opd = opd
         
-        return opd
+        self.opd = opd.real
+        
+        return opd.real
     
     @utils.quantity_input(wavelength=u.meter)
     def get_Cn2(self, wavelength):
