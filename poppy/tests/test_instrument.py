@@ -83,7 +83,8 @@ def test_instrument_source_pysynphot():
     assert psf_weights_pysynphot[0].header['NWAVES'] == len(wavelengths), \
         "Number of wavelengths in PSF header does not match number requested"
 
-    assert np.allclose(psf_weights_explicit[0].data, psf_weights_pysynphot[0].data), (
+    assert np.allclose(psf_weights_explicit[0].data, psf_weights_pysynphot[0].data,
+            rtol=1e-4), ( # Slightly larger tolerance to accomodate minor changes w/ pysynphot versions
         "PySynphot multiwavelength PSF does not match the weights and wavelengths pre-computed for "
         "a 5500 K blackbody in Johnson B (has pysynphot changed?)"
     )
@@ -100,7 +101,7 @@ def test_pysynphot_spectra_cache():
     source = pysynphot.BlackBody(5700)
     nlambda = 2
     ins = instrument.Instrument()
-    cache_key = ins._getSpecCacheKey(source, nlambda)
+    cache_key = ins._get_spec_cache_key(source, nlambda)
     assert cache_key not in ins._spectra_cache, "How is the cache populated already?"
     psf = ins.calc_psf(nlambda=2, source=source, fov_pixels=2)
     assert cache_key in ins._spectra_cache, "Cache was not populated"
@@ -123,7 +124,7 @@ def test_instrument_gaussian_jitter():
     inst.pixelscale=0.010
     inst.options['jitter'] = None
     oversample = 1 # oversample
-    psf_no_jitter = inst.calc_psf(monochromatic=1e-6, fov_arcsec=2, oversample=oversample)
+    psf_no_jitter = inst.calc_psf(monochromatic=1e-6, fov_arcsec=3, oversample=oversample)
 
 
     jitter_sigmas = [ 0.005,  0.020,  0.080, 0.16, 0.5]  # arcseconds
@@ -140,7 +141,7 @@ def test_instrument_gaussian_jitter():
 
         inst.options['jitter'] = 'gaussian'
         inst.options['jitter_sigma'] = JITTER_SIGMA
-        psf_jitter = inst.calc_psf(monochromatic=1e-6, fov_arcsec=2, oversample=oversample)
+        psf_jitter = inst.calc_psf(monochromatic=1e-6, fov_arcsec=3, oversample=oversample)
 
         fwhm_no_jitter = utils.measure_fwhm(psf_no_jitter)
         fwhm_with_jitter = utils.measure_fwhm(psf_jitter)
@@ -158,7 +159,7 @@ def test_instrument_gaussian_jitter():
         poppy_core._log.info("TEST: Jitter sigma={0:.4f}.   PSF sigma pre: {1:.4f}    post: {2:.4f}    expected: {3:.4f}".format(JITTER_SIGMA, pre_sigma, post_sigma, expected_post_sigma))
 
         reldiff = np.abs(post_sigma-expected_post_sigma)/post_sigma
-        assert reldiff < tolerance, "Post-jitter PSF width is too different from expected width"
+        assert reldiff < tolerance, "Post-jitter PSF width is too different from expected width: {:.4f}, {:.4f} arcsec".format(post_sigma, expected_post_sigma)
 
 
 def test_instrument_calc_datacube():

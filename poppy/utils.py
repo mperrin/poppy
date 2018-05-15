@@ -38,7 +38,7 @@ class FFTWWisdomWarning(RuntimeWarning):
     pass
 
 __all__ = ['display_PSF', 'display_PSF_difference', 'display_EE', 'measure_EE', #TODO:mperrin: back compatibility aliases - remove in 0.6
-           'display_psf', 'display_psf_difference', 'display_ee', 'measure_ee',
+           'display_psf', 'display_psf_difference', 'display_ee', 'measure_ee', 'measure_radius_at_ee',
            'display_profiles', 'radial_profile',
            'measure_radial', 'measure_fwhm', 'measure_sharpness', 'measure_centroid', 'measure_strehl',
            'measure_anisotropy', 'specFromSpectralType']
@@ -202,6 +202,13 @@ def display_psf(HDUlist_or_filename, ext=0, vmin=1e-7, vmax=1e-1,
         interpolation=interpolation,
         origin='lower'
     )
+
+    if markcentroid:
+        _log.info("measuring centroid to mark on plot...")
+        ceny, cenx = measure_centroid(HDUlist, ext=ext, units='arcsec', relativeto='center', boxsize=20, threshold=0.1)
+        ax.plot(cenx, ceny, 'k+', markersize=15, markeredgewidth=1)
+        _log.info("centroid: (%f, %f) " % (cenx, ceny))
+
     if imagecrop is not None:
         halffov_x = min((imagecrop / 2.0, halffov_x))
         halffov_y = min((imagecrop / 2.0, halffov_y))
@@ -245,12 +252,6 @@ def display_psf(HDUlist_or_filename, ext=0, vmin=1e-7, vmax=1e-1,
         else:
             cb.set_label('Fractional intensity per pixel')
 
-    if markcentroid:
-        _log.info("measuring centroid to mark on plot...")
-        ceny, cenx = measure_centroid(HDUlist, ext=ext, units='arcsec', relativeto='center', boxsize=20, threshhold=0.1)
-        ax.plot(cenx, ceny, 'k+', markersize=15, markeredgewidth=1)
-        _log.info("centroid: (%f, %f) " % (cenx, ceny))
-        plt.draw()
 
     if return_ax:
         if colorbar:
@@ -415,13 +416,13 @@ def display_ee(HDUlist_or_filename=None, ext=0, overplot=False, ax=None, mark_le
 
     """
     if isinstance(HDUlist_or_filename, six.string_types):
-        HDUlist = fits.open(HDUlist_or_filename, ext=ext)
+        hdu_list = fits.open(HDUlist_or_filename)
     elif isinstance(HDUlist_or_filename, fits.HDUList):
-        HDUlist = HDUlist_or_filename
+        hdu_list = HDUlist_or_filename
     else:
         raise ValueError("input must be a filename or HDUlist")
 
-    radius, profile, EE = radial_profile(HDUlist, EE=True, **kwargs)
+    radius, profile, EE = radial_profile(hdu_list, EE=True, ext=ext, **kwargs)
 
     if not overplot:
         if ax is None:
@@ -458,17 +459,17 @@ def display_profiles(HDUlist_or_filename=None, ext=0, overplot=False, title=None
 
     """
     if isinstance(HDUlist_or_filename, six.string_types):
-        HDUlist = fits.open(HDUlist_or_filename, ext=ext)
+        hdu_list = fits.open(HDUlist_or_filename, ext=ext)
     elif isinstance(HDUlist_or_filename, fits.HDUList):
-        HDUlist = HDUlist_or_filename
+        hdu_list = HDUlist_or_filename
     else:
         raise ValueError("input must be a filename or HDUlist")
 
-    radius, profile, EE = radial_profile(HDUlist, EE=True, ext=ext, **kwargs)
+    radius, profile, EE = radial_profile(hdu_list, EE=True, ext=ext, **kwargs)
 
     if title is None:
         try:
-            title = "%s, %s" % (HDUlist[ext].header['INSTRUME'], HDUlist[ext].header['FILTER'])
+            title = "%s, %s" % (hdu_list[ext].header['INSTRUME'], hdu_list[ext].header['FILTER'])
         except KeyError:
             title = str(HDUlist_or_filename)
 
@@ -498,7 +499,7 @@ def display_profiles(HDUlist_or_filename=None, ext=0, overplot=False, title=None
 
 
 def radial_profile(HDUlist_or_filename=None, ext=0, EE=False, center=None, stddev=False, binsize=None, maxradius=None,
-                   normalize='None'):
+                   normalize='None', pa_range=None):
     """ Compute a radial profile of the image.
 
     This computes a discrete radial profile evaluated on the provided binsize. For a version
@@ -509,7 +510,8 @@ def radial_profile(HDUlist_or_filename=None, ext=0, EE=False, center=None, stdde
     Parameters
     ----------
     HDUlist_or_filename : string
-        what it sounds like.
+        FITS HDUList object or path to a FITS file.
+        NaN values in the FITS data array are treated as masked and ignored in computing bin statistics.
     ext : int
         Extension in FITS file
     EE : bool
@@ -523,6 +525,11 @@ def radial_profile(HDUlist_or_filename=None, ext=0, EE=False, center=None, stdde
     normalize : string
         set to 'peak' to normalize peak intensity =1, or to 'total' to normalize total flux=1.
         Default is no normalization.
+    pa_range : list of floats, optional
+        Optional specification for [min, max] position angles to be included in the radial profile.
+        I.e. calculate that profile only for some wedge, not the full image. Specify the PA in degrees
+        counterclockwise from +Y axis=0. Note that you can specify ranges across zero using negative numbers,
+        such as pa_range=[-10,10].  The allowed PA range runs from -180 to 180 degrees.
 
     Returns
     --------
@@ -533,13 +540,13 @@ def radial_profile(HDUlist_or_filename=None, ext=0, EE=False, center=None, stdde
         as precise as possible.
     """
     if isinstance(HDUlist_or_filename, six.string_types):
-        HDUlist = fits.open(HDUlist_or_filename)
+        hdu_list = fits.open(HDUlist_or_filename)
     elif isinstance(HDUlist_or_filename, fits.HDUList):
-        HDUlist = HDUlist_or_filename
+        hdu_list = HDUlist_or_filename
     else:
         raise ValueError("input must be a filename or HDUlist")
 
-    image = HDUlist[ext].data.copy()  # don't change normalization of actual input array, work with a copy!
+    image = hdu_list[ext].data.copy()  # don't change normalization of actual input array, work with a copy!
 
     if normalize.lower() == 'peak':
         _log.debug("Calculating profile with PSF normalized to peak = 1")
@@ -548,7 +555,7 @@ def radial_profile(HDUlist_or_filename=None, ext=0, EE=False, center=None, stdde
         _log.debug("Calculating profile with PSF normalized to total = 1")
         image /= image.sum()
 
-    pixelscale = HDUlist[ext].header['PIXELSCL']
+    pixelscale = hdu_list[ext].header['PIXELSCL']
 
     if maxradius is not None:
         raise NotImplemented("add max radius")
@@ -556,22 +563,38 @@ def radial_profile(HDUlist_or_filename=None, ext=0, EE=False, center=None, stdde
     if binsize is None:
         binsize = pixelscale
 
-    y, x = np.indices(image.shape)
+    y, x = np.indices(image.shape, dtype=float)
     if center is None:
         # get exact center of image
         # center = (image.shape[1]/2, image.shape[0]/2)
         center = tuple((a - 1) / 2.0 for a in image.shape[::-1])
 
-    r = np.sqrt((x - center[0]) ** 2 + (y - center[1]) ** 2) * pixelscale / binsize  # radius in bin size steps
-    ind = np.argsort(r.flat)
+    x-=center[0]
+    y-=center[1]
 
-    sr = r.flat[ind]
-    sim = image.flat[ind]
-    ri = sr.astype(int)
+    r = np.sqrt(x** 2 + y** 2) * pixelscale / binsize  # radius in bin size steps
+
+    if pa_range is None:
+        # Use full image
+        ind = np.argsort(r.flat)
+        sr = r.flat[ind]            # sorted r
+        sim = image.flat[ind]       # sorted image
+
+    else:
+        # Apply the PA range restriction
+        pa = np.rad2deg(np.arctan2(-x,y)) # Note the (-x,y) convention is needed for astronomical PA convention
+        mask = (pa >= pa_range[0]) & (pa <= pa_range[1])
+        ind = np.argsort(r[mask].flat)
+        sr = r[mask].flat[ind]
+        sim = image[mask].flat[ind]
+
+
+    ri = sr.astype(int)         # sorted r as int
     deltar = ri[1:] - ri[:-1]  # assume all radii represented (more work if not)
     rind = np.where(deltar)[0]
     nr = rind[1:] - rind[:-1]  # number in radius bin
-    csim = np.cumsum(sim, dtype=float)  # cumulative sum to figure out sums for each bin
+    csim = np.nan_to_num(sim).cumsum(dtype=float)   # cumulative sum to figure out sums for each bin
+    #np.nancumsum is implemented in >1.12
     tbin = csim[rind[1:]] - csim[rind[:-1]]  # sum for image values in radius bins
     radialprofile = tbin / nr
 
@@ -585,6 +608,10 @@ def radial_profile(HDUlist_or_filename=None, ext=0, EE=False, center=None, stdde
     radialprofile2[1:] = radialprofile
     rr = np.arange(
         len(radialprofile2)) * binsize + binsize * 0.5  # these should be centered in the bins, so add a half.
+    if pa_range is not None:
+        # for PA ranges < 45 deg or so, the innermost pixel that's valid in the mask may be
+        # more than a pixel from the center. Therefore we have to include that offset here
+        rr += binsize * np.floor(sr[0])
 
     if stddev:
         stddevs = np.zeros_like(radialprofile2)
@@ -595,7 +622,7 @@ def radial_profile(HDUlist_or_filename=None, ext=0, EE=False, center=None, stdde
             else:
                 wg = np.where((r_pix >= (radius - binsize / 2)) & (r_pix < (radius + binsize / 2)))
                 # wg = np.where( (r >= rr[i-1]) &  (r <rr[i] )))
-            stddevs[i] = image[wg].std()
+            stddevs[i] = np.nanstd(image[wg])
         return rr, stddevs
 
     if not EE:
@@ -657,6 +684,46 @@ def measure_ee(HDUlist_or_filename=None, ext=0, center=None, binsize=None):
     return EE_fn
 
 
+def measure_radius_at_ee(HDUlist_or_filename=None, ext=0, center=None, binsize=None):
+    """ measure encircled energy vs radius and return as an interpolator
+    Returns a function object which when called returns the radius for a given Encircled Energy. This is the
+    inverse function of measure_ee
+
+    Parameters
+    ----------
+    HDUlist_or_filename : string
+        Either a fits.HDUList object or a filename of a FITS file on disk
+    ext : int
+        Extension in that FITS file
+    center : tuple of floats
+        Coordinates (x,y) of PSF center. Default is image center.
+    binsize:
+        size of step for profile. Default is pixel size.
+
+    Returns
+    --------
+    radius: function
+        A function which will return the radius of a desired encircled energy.
+
+    Examples
+    --------
+    EE = measure_radius_at_ee("someimage.fits")
+    print "The EE is 50% at {} arcsec".format(EE(0.5))
+    """
+
+    rr, radialprofile2, EE = radial_profile(HDUlist_or_filename, ext, EE=True, center=center, binsize=binsize)
+
+    # append the zero at the center
+    rr_EE = rr + (rr[1] - rr[0]) / 2.0  # add half a binsize to this, because the EE is measured inside the
+    # outer edge of each annulus.
+    rr0 = np.concatenate(([0], rr_EE))
+    EE0 = np.concatenate(([0], EE))
+
+    radius_at_ee_fn = scipy.interpolate.interp1d(EE0, rr0, kind='cubic', bounds_error=False)
+
+    return radius_at_ee_fn
+
+
 def measure_radial(HDUlist_or_filename=None, ext=0, center=None, binsize=None):
     """ measure azimuthally averaged radial profile of a PSF.
 
@@ -694,8 +761,114 @@ def measure_radial(HDUlist_or_filename=None, ext=0, center=None, binsize=None):
     return radial_fn
 
 
-def measure_fwhm(HDUlist_or_filename=None, ext=0, center=None, level=0.5):
-    """ Measure FWHM by interpolation of the radial profile
+def measure_fwhm(HDUlist_or_filename,ext=0, center=None, plot=False, threshold=0.1):
+    """ Improved version of measuring FWHM, without any binning of image data.
+
+    Method: Pick out the image pixels which are above some threshold relative to the
+    peak intensity, then fit a Gaussian to those. Infer the FWHM based on the width of
+    the Gaussian.
+
+
+    Parameters
+    ----------
+    HDUlist_or_filename : string
+        what it sounds like.
+    ext : int
+        Extension in FITS file
+    center : tuple of floats
+        Coordinates (x,y) of PSF center, in pixel units. Default is image center.
+    threshold : float
+        Fraction relative to the peak pixel that is used to select the bright peak pixels
+        used in fitting the Gaussian. Default is 0.1, i.e. pixels brighter that 0.1 of
+        the maximum will be included. This is chosen semi-arbitrarily to include most of
+        the peak but exclude the first Airy ring for typical cases.
+    plot : bool
+        Display a diagnostic plot.
+
+    Returns
+    -------
+    fwhm : float
+        FWHM in arcseconds
+
+    """
+    from astropy.modeling import models, fitting
+
+    if isinstance(HDUlist_or_filename, six.string_types):
+        HDUlist = fits.open(HDUlist_or_filename)
+    elif isinstance(HDUlist_or_filename, fits.HDUList):
+        HDUlist = HDUlist_or_filename
+    else:
+        raise ValueError("input must be a filename or HDUlist")
+
+    image = HDUlist[ext].data.copy()  # don't change normalization of actual input array; work with a copy
+    image /= image.max()              # Normalize the copy to peak=1
+
+    pixelscale = HDUlist[ext].header['PIXELSCL']
+
+    _log.debug("Pixelscale is {} arcsec/pix.".format(pixelscale, ))
+
+    # Prepare array r with radius in arcseconds
+    y, x = np.indices(image.shape, dtype=float)
+    if center is None:
+        # get exact center of image
+        center = tuple((a - 1) / 2.0 for a in image.shape[::-1])
+    _log.debug("Using PSF center = {}".format(center))
+    x-=center[0]
+    y-=center[1]
+    r = np.sqrt(x** 2 + y** 2) * pixelscale   # radius in arcseconds
+
+    # Select pixels above that threshold
+    wpeak = np.where(image>threshold)  # note, image is normalized to peak=1 above
+    _log.debug("Using {} pixels above {} of peak".format(len(wpeak[0]), threshold))
+
+    rpeak =r[wpeak]
+    impeak = image[wpeak]
+
+    # Determine initial guess for Gaussian parameters
+    if 'DIFFLMT' in HDUlist[ext].header:
+        std_guess = HDUlist[ext].header['DIFFLMT']/2.354
+    else:
+        std_guess=measure_fwhm_radprof(HDUlist, ext=ext, center=center, nowarn=True)/2.354
+    _log.debug("Initial guess Gaussian sigma= {} arcsec".format(std_guess))
+
+    # Determine best fit Gaussian parameters
+    g_init = models.Gaussian1D(amplitude=1., mean=0, stddev=std_guess)
+    g_init.mean.fixed=True
+
+    fit_g = fitting.LevMarLSQFitter()
+    g = fit_g(g_init, rpeak, impeak)
+    _log.debug("Fit results for Gaussian: {}, {}".format(g.amplitude, g.stddev))
+
+    # Convert from the fit result sigma parameter to FWHM.
+    # note, astropy fitting doesn't constrain the stddev to be positive for some reason.
+    # so take abs value here.
+    fwhm = 2*np.sqrt(2*np.log(2)) * np.abs(g.stddev)
+
+    if plot:
+        plt.loglog(rpeak, impeak, linestyle='none', marker='o', alpha=0.5)
+        rmin = rpeak[rpeak !=0].min()
+        plotr = np.linspace(rmin, rpeak.max(), 30)
+
+        plt.plot(plotr, g(plotr))
+        plt.xlabel("Radius [arcsec]")
+        plt.ylabel("Intensity relative to peak")
+
+        plt.axhline(0.5,ls=":")
+        plt.axvline(fwhm/2, ls=':')
+        plt.text(0.1, 0.2,  'FWHM={:.4f} arcsec'.format(fwhm), transform=plt.gca().transAxes,)
+
+        plt.gca().set_ylim(threshold*.5, 2)
+
+    return fwhm
+
+
+def measure_fwhm_radprof(HDUlist_or_filename=None, ext=0, center=None, level=0.5, nowarn=False):
+    """ Measure FWHM by interpolation of the radial profile.
+    This version is old/deprecated; see the new measure_fwhm instead.
+
+    However, this function is kept, for now, to provide a robust, simple backup
+    method which can be used to determine the initial guess for the model-fitting
+    approach in the newer measure_fwhm function.
 
     This measures the full width at half maximum for the supplied PSF,
     or optionally the full width at some other fraction of max.
@@ -711,8 +884,16 @@ def measure_fwhm(HDUlist_or_filename=None, ext=0, center=None, level=0.5):
         You can also measure widths at other levels e.g. FW at 10% max
         by setting level=0.1
 
+    Returns
+    -------
+    fwhm : float
+        FWHM in arcseconds
 
     """
+
+    if not nowarn:
+        import warnings
+        warnings.warn("measure_fwhm_radprof uses a deprecated, older algorithm. measure_fwhm is preferred in most cases.", DeprecationWarning)
 
     rr, radialprofile, EE = radial_profile(HDUlist_or_filename, ext, EE=True, center=center)
     rpmax = radialprofile.max()
@@ -886,7 +1067,7 @@ def pad_to_oversample(array, oversample):
 
 def pad_to_size(array, padded_shape):
     """ Add zeros around the edge of an array, to reach a specific defined size and shape.
-    This is similar to padToOversample but is more flexible.
+    This is similar to pad_to_oversample but is more flexible.
 
     Parameters
     ----------
@@ -914,8 +1095,8 @@ def pad_to_size(array, padded_shape):
         outsize1 = padded_shape[1]
     # npix = array.shape[0]
     padded = np.zeros(shape=padded_shape, dtype=array.dtype)
-    n0 = (outsize0 - array.shape[0]) / 2  # pixel offset for the inner array
-    m0 = (outsize1 - array.shape[1]) / 2  # pixel offset in second dimension
+    n0 = (outsize0 - array.shape[0]) // 2  # pixel offset for the inner array
+    m0 = (outsize1 - array.shape[1]) // 2  # pixel offset in second dimension
     n1 = n0 + array.shape[0]
     m1 = m0 + array.shape[1]
     n0 = int(round(n0))  # because astropy test_plugins enforces integer indices
@@ -1080,7 +1261,13 @@ class BackCompatibleQuantityInput(object):
 
     def __call__(self, wrapped_function):
         from astropy.utils.decorators import wraps
-        from astropy.utils.compat import funcsigs
+
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            from astropy.utils.compat import funcsigs
+            # TODO update this code to avoid the deprecated function, once
+            # we are running in only-python-3 mode
         from astropy.units import UnitsError, add_enabled_equivalencies, Quantity
 
         # Extract the function signature for the function we are wrapping.
@@ -1447,7 +1634,7 @@ def fftw_save_wisdom(filename=None):
         Filename to use (instead of the default, poppy_fftw_wisdom.json)
     """
 
-    from .poppy_core import _FFTW_INIT
+    from .accel_math import _FFTW_INIT
     if filename is None:
         filename = os.path.join(config.get_config_dir(), "poppy_fftw_wisdom.json")
 
@@ -1480,7 +1667,7 @@ def fftw_load_wisdom(filename=None):
     filename : string, optional
         Filename to use (instead of the default, poppy_fftw_wisdom.json)
     """
-    from .poppy_core import _FFTW_INIT
+    from .accel_math import _FFTW_INIT
     global _loaded_fftw_wisdom
     if _loaded_fftw_wisdom:
         _log.debug("Already loaded wisdom prior to this calculation, not reloading.")

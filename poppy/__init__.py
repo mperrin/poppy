@@ -2,18 +2,15 @@
 
 """Physical Optics Propagation in PYthon (POPPY)
 
-
 POPPY is a Python package that simulates physical optical propagation including diffraction.
 It implements a flexible framework for modeling Fraunhofer (far-field) diffraction
 and point spread function formation, particularly in the context of astronomical telescopes.
 POPPY was developed as part of a simulation package for JWST, but is more broadly applicable to many kinds of
 imaging simulations.
 
-Developed by Marshall Perrin at STScI, 2010-2014, for use simulating the James Webb Space Telescope.
+Developed by Marshall Perrin and colleagues at STScI, 2010-2017, for use simulating the James Webb Space Telescope.
 
-Documentation can be found online at https://pythonhosted.org/poppy/
-
-This is an Astropy affiliated package.
+Documentation can be found online at https://poppy-optics.readthedocs.io/
 """
 
 # Affiliated packages may add whatever they like to this file, but
@@ -60,6 +57,10 @@ class Conf(_config.ConfigNamespace):
             'automatically save and reload FFTW ' +
             '"wisdom" for improved speed?')
 
+    use_cuda = _config.ConfigItem(True, 'Use cuda via accelerate for FFTs (assuming it' +
+            'is available)?')
+    use_numexpr = _config.ConfigItem(True, 'Use NumExpr to accelarate array math (assuming it' +
+            'is available)?')
     default_image_display_fov = _config.ConfigItem(5.0, 'Default image' +
             'display field of view, in arcseconds. Adjust this to display ' +
             'only a subregion of a larger output array.')
@@ -93,12 +94,14 @@ from . import optics
 from . import misc
 from . import fresnel
 from . import wfe
+from . import dms
 
 from .poppy_core import *
 from .utils import *
 from .optics import *
 from .wfe import *
 from .fresnel import *
+from .special_prop import *
 
 from .instrument import Instrument
 

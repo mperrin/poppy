@@ -39,9 +39,6 @@ wavelength=2e-6
 
 ######### Core tests functions #########
 
-
-
-
 def test_basic_functionality():
     """ For one specific geometry, test that we get the expected value based on a prior reference
     calculation."""
@@ -53,7 +50,6 @@ def test_basic_functionality():
     psf = osys.calcPSF(wavelength=1.0e-6)
     # we need to be a little careful here due to floating point math comparision equality issues... Can't just do a strict equality
     assert abs(psf[0].data.max() - 0.201) < 0.001
-
 
 
 def test_input_wavefront_size():
@@ -98,10 +94,6 @@ def test_input_wavefront_size():
         expected_shape = (npix,npix)
         assert pupil_fits[0].data.shape == expected_shape, 'FITS array from optic element is not the expected size: is {} expects {}'.format(pupil_fits[0].data.shape,  expected_shape)
         assert wf.shape == expected_shape, 'Wavefront is not the expected size: is {} expects {}'.format(wf.shape,  expected_shape)
-
-
-
-
 
 
 
@@ -150,9 +142,6 @@ def test_CircularAperture_Airy(display=False):
         pl.subplot(144)
         ax2=pl.imshow(np.abs(numeric[0].data-analytic) < 3e-5)
         pl.title("Difference <1e-5")
-
-#fits.writeto("test.fits", numeric[0].data-analytic)
-#print a2.max()
 
 
 def test_multiwavelength_opticalsystem():
@@ -393,3 +382,11 @@ def test_unit_conversions():
         difference = numeric_psf[0].data-analytic
         assert np.all(np.abs(difference) < 3e-5)
 
+def test_return_complex():
+    osys =poppy_core.OpticalSystem()
+    osys.add_pupil(optics.CircularAperture(radius=3))   
+    osys.add_detector(pixelscale=0.010, fov_arcsec=5.0)
+    psf = osys.calc_psf(2e-6,return_final=True) 
+    assert len(psf[1])==1 #make sure only one element was returned
+    #test that the wavefront returned is the final wavefront:
+    assert np.allclose(psf[1][0].intensity,psf[0][0].data)

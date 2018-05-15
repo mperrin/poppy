@@ -9,13 +9,21 @@ except ImportError:
     pyfftw = None
 
 from .. import utils
+from .. import poppy_core
+import poppy
+import scipy
 
-def test_padToSize():
-    square = np.ones((300,300))
+def test_pad_to_size():
 
-    for desiredshape in [ (500, 500), (400,632), (2048, 312)]:
-        newshape = utils.pad_to_size(square, desiredshape).shape
-        for i in [0,1]: assert newshape[i] == desiredshape[i]
+    for starting_shape in [(20,20), (21,21), (300,300), (128,256)]:
+
+        square = np.ones(starting_shape)
+
+        for desiredshape in [ (500, 500), (400,632), (2048, 312)]:
+            newshape = utils.pad_to_size(square, desiredshape).shape
+            for i in [0,1]:
+                assert newshape[i] == desiredshape[i], "Error padding from {} to {}".format(starting_shape, desired_shape)
+
 
 
 
@@ -42,8 +50,88 @@ def makeGaussian(size, fwhm = 3, center=None):
 
     return np.exp(-4*np.log(2) * ((x-x0)**2 + (y-y0)**2) / fwhm**2)
 
+def test_radial_profile(plot=False):
+    """ Test radial profile calculation, including circular and square apertures,
+    and including with the pa_range option.
+    """
 
-def test_measure_FWHM(display=False):
+    ### Tests on a circular aperture
+
+    o = poppy_core.OpticalSystem()
+    o.add_pupil(poppy.CircularAperture(radius=1.0))
+    o.add_detector(0.010, fov_pixels=512)
+    psf = o.calc_psf()
+
+    rad, prof = poppy.radial_profile(psf)
+    rad2, prof2 = poppy.radial_profile(psf, pa_range=[-20,20])
+    rad3, prof3 = poppy.radial_profile(psf, pa_range=[-20+90, 20+90])
+
+
+    # Compute analytical Airy function, on exact same radial sampling as that profile.
+    v = np.pi*  rad*poppy.misc._ARCSECtoRAD * 2.0/1e-06
+    airy = ((2*scipy.special.jn(1, v))/v)**2
+    r0 = 33 # 0.33 arcsec ~ first airy ring in this case.
+    airy_peak_envelope = airy[r0]*prof.max() / (rad/rad[r0])**3
+
+    absdiff =  np.abs(prof - airy*prof.max())
+
+    if plot:
+        import matplotlib.pyplot as plt
+        plt.figure(figsize=(12,6))
+        plt.subplot(1,2,1)
+        poppy.display_psf(psf, colorbar_orientation='horizontal', title='Circular Aperture, d=2 m')
+
+        plt.subplot(1,2,2)
+        plt.semilogy(rad,prof)
+        plt.semilogy(rad2,prof2, ls='--', color='red')
+        plt.semilogy(rad3,prof3, ls=':', color='cyan')
+        plt.semilogy(rad, airy_peak_envelope, color='gray')
+        plt.semilogy(rad, airy_peak_envelope/50, color='gray', alpha=0.5)
+
+
+        plt.semilogy(rad, absdiff, color='purple')
+
+    # Test the radial profile is close to the analytical Airy function.
+    # It's hard to define relative fractional closeness for comparisons to
+    # a function with many zero crossings; we can't just take (f1-f2)/(f1+f2)
+    # This is a bit of a hack but let's test that the difference between
+    # numerical and analytical is always less than 1/50th of the peaks of the
+    # Airy function (fit based on the 1/r^3 power law fall off)
+
+    assert np.all( absdiff[0:300] < airy_peak_envelope[0:300]/50)
+
+    # Test that the partial radial profiles agree with the full one. This test is
+    # a little tricky since the sampling in r may not agree exactly.
+    # TODO write test comparison here
+
+    # Let's also test that the partial radial profiles on 90 degrees agree with each other.
+    # These should match to machine precision.
+    assert np.allclose(prof2, prof3)
+
+    ### Next test is on a square aperture
+    o = poppy.OpticalSystem()
+    o.add_pupil(poppy.SquareAperture())
+    o.add_detector(0.010, fov_pixels=512)
+    psf = o.calc_psf()
+    rad, prof = poppy.radial_profile(psf)
+    rad2, prof2 = poppy.radial_profile(psf, pa_range=[-20,20])
+    rad3, prof3 = poppy.radial_profile(psf, pa_range=[-20+90, 20+90])
+
+
+    if plot:
+        plt.figure(figsize=(12,6))
+        plt.subplot(1,2,1)
+        poppy.display_psf(psf, colorbar_orientation='horizontal', title='Square Aperture, size=1 m')
+
+        plt.subplot(1,2,2)
+        plt.semilogy(rad,prof)
+        plt.semilogy(rad2,prof2, ls='--', color='red')
+        plt.semilogy(rad3,prof3, ls=':', color='cyan')
+
+    assert np.allclose(prof2, prof3)
+    # TODO compare those to be near a sinc profile as expected?
+
+def test_measure_FWHM(display=False, verbose=False):
     """ Test the utils.measure_FWHM function
 
     Current implementation can be off by a
@@ -54,10 +142,11 @@ def test_measure_FWHM(display=False):
 
     """
 
+    # Test the basic output on simple Gaussian arrays
     desired = (3, 4.5, 5, 8, 12)
-    tolerance= (0.07, 0.03, 0.02, 0.02, 0.02)
+    tolerance= 0.01
 
-    for des, tol in zip(desired, tolerance):
+    for des in desired:
 
 
         desired_fwhm = des #4.0 # pixels
@@ -70,11 +159,58 @@ def test_measure_FWHM(display=False):
         testfits[0].header['PIXELSCL'] = pxscl
 
         meas_fwhm = utils.measure_fwhm(testfits, center=center)
-        print("Measured FWHM: {0:.4f} arcsec, {1:.4f} pixels ".format(meas_fwhm, meas_fwhm/pxscl))
+        if verbose:
+            print("Measured FWHM: {0:.4f} arcsec, {1:.4f} pixels ".format(meas_fwhm, meas_fwhm/pxscl))
 
         reldiff =  np.abs((meas_fwhm/pxscl) - desired_fwhm ) / desired_fwhm
-        print("Desired: {0:.4f}. Relative difference: {1:.4f}    Tolerance: {2:.4f}".format(desired_fwhm, reldiff, tol))
-        assert( reldiff < tol )
+        result = "Measured: {3:.4f} pixels; Desired: {0:.4f} pixels. Relative difference: {1:.4f}    Tolerance: {2:.4f}".format(desired_fwhm, reldiff, tolerance, meas_fwhm/pxscl)
+        if verbose:
+            print(result)
+        assert reldiff < tolerance, result 
+
+    # Test on Poppy outputs too
+    # We test both well sampled and barely sampled cases.
+    # In this test case the FWHM is 0.206265 arcsec, so pixel scale up to 0.2 arcsec.
+    pixscales = [0.01, 0.1, 0.2]
+    # We allow slightly worse accurance for less well sampled data
+    tolerances= [0.01, 0.015, 0.04]
+
+    for pixscale, tolerance in zip(pixscales, tolerances):
+
+        import astropy.units as u
+        o = poppy.OpticalSystem()
+        o.add_pupil(poppy.CircularAperture(radius=0.5*u.m))
+        o.add_detector(pixscale, fov_pixels=128)
+        psf = o.calc_psf(wavelength=1*u.micron)
+
+        meas_fwhm = poppy.measure_fwhm(psf)
+        expected_fwhm = ((1*u.micron/(1*u.m)).decompose().value*u.radian).to(u.arcsec).value
+
+        reldiff =  np.abs((meas_fwhm - expected_fwhm ) / expected_fwhm)
+
+        result = "Measured: {3:.4f} arcsec; Desired: {0:.4f} arcsec. Relative difference: {1:.4f}    Tolerance: {2:.4f}".format(expected_fwhm, reldiff, tolerance, meas_fwhm)
+
+        assert reldiff < tolerance, result
+
+
+def test_measure_radius_at_ee():
+    """ Test the function measure_radius_at_ee in poppy/utils.py which measures the encircled
+    energy vs radius and return as an interpolator.
+    """
+
+    # Tests on a circular aperture
+    o = poppy.OpticalSystem()
+    o.add_pupil(poppy.CircularAperture())
+    o.add_detector(0.010, fov_pixels=512)
+    psf = o.calc_psf()
+
+    # Create outputs of the 2 inverse functions
+    rad = utils.measure_radius_at_ee(psf)
+    ee = utils.measure_ee(psf)
+
+    # The ee and rad functions should undo each other and yield the input value
+    for i in [0.1, 0.5, 0.8]:
+        np.testing.assert_almost_equal(i, ee(rad(i)), decimal=3, err_msg="Error: Values not equal")
 
 @pytest.mark.skipif(pyfftw is None, reason="pyFFTW not found")
 def test_load_save_fftw_wisdom(tmpdir):

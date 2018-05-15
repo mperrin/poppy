@@ -145,7 +145,7 @@ def test_Circular_Aperture_PTP_long(display=False, npix=512, display_proper=Fals
         gw.display('both',colorbar=True)
         plt.figure(figsize=(12,6))
 
-        plt.plot(x[0,:], inten[inten.shape[1]/2,:], label='POPPY')
+        plt.plot(x[0,:], inten[inten.shape[1]//2,:], label='POPPY')
         plt.title("z={:0.2e} , compare to Anderson and Enmark fig.6.15".format(z))
         plt.gca().set_xlim(-1, 1)
         plt.text(0.1,2, "Max value: {0:.4f}\nExpected:   {1:.4f}".format(np.max(inten), max(proper_y)))
@@ -175,7 +175,7 @@ def test_Circular_Aperture_PTP_long(display=False, npix=512, display_proper=Fals
     # due to the minor asymmetry from having the FFT center pixel
     # not precisely centered in the array.)
 
-    cen = inten.shape[0]/2
+    cen = inten.shape[0]//2
     cutsize=10
     center_cut_x = inten[cen-cutsize:cen+cutsize+1, cen]
     assert(np.all((center_cut_x- center_cut_x[::-1])/center_cut_x < 0.001))
@@ -196,7 +196,13 @@ def test_Circular_Aperture_PTP_short(display=False, npix=512, display_proper=Fal
         npix=npix,
         oversample=4)
     wf *= optics.CircularAperture(radius=800 * 1e-9*u.m)
-    wf_2 = wf.copy()
+    wf_2 = fresnel.FresnelWavefront(
+        2 * u.um,
+        wavelength=10e-9*u.m,
+        npix=npix,
+        oversample=4)
+    wf_2 *= optics.CircularAperture(radius=800 * 1e-9*u.m)
+
     z = 12. * u.um
 
     # Calculate same result using 2 different algorithms:
@@ -235,7 +241,7 @@ def test_spherical_lens(display=False):
     #build a simple system without apertures.
     beam_diameter =  .025*u.m
     fl = u.m*0.7
-    wavefront = fresnel.FresnelWavefront(beam_radius=beam_diameter/2., 
+    wavefront = fresnel.FresnelWavefront(beam_radius=beam_diameter/2.,
                                    wavelength=500.0e-9, npix=256,
                                    oversample=1)
     diam = beam_diameter
@@ -245,7 +251,7 @@ def test_spherical_lens(display=False):
     assert  1e-11 > abs(np.mean(wavefront.phase)-proper_wavefront_mean)
     assert  1e-11 > abs(np.max(wavefront.phase)-proper_phase_max)
 
-def test_fresnel_optical_system_Hubble(display=False):
+def test_fresnel_optical_system_Hubble(display=False, sampling=2):
     """ Test the FresnelOpticalSystem infrastructure
     This is a fairly comprehensive test case using as its
     example a simplified version of the Hubble Space Telescope.
@@ -279,9 +285,7 @@ def test_fresnel_optical_system_Hubble(display=False):
     fl_sec = -0.6790325 * u.m
     d_sec_to_focus = 6.3916645 * u.m # place focal plane right at the beam waist after the SM
 
-    osamp = 2 #oversampling factor
-
-    hst = fresnel.FresnelOpticalSystem(pupil_diameter=2.4*u.m, beam_ratio=0.25)
+    hst = fresnel.FresnelOpticalSystem(pupil_diameter=2.4*u.m, beam_ratio=1./sampling)
     g1 = fresnel.QuadraticLens(fl_pri, name='Primary', planetype=poppy_core.PlaneType.pupil)
     g2 = fresnel.QuadraticLens(fl_sec, name='Secondary')
 
@@ -293,56 +297,58 @@ def test_fresnel_optical_system_Hubble(display=False):
     # Create a PSF
     psf, waves = hst.calc_psf(wavelength=0.5e-6, display_intermediates=display, return_intermediates=True)
 
+    if len(waves)>1:
 
-    ### check the beam size is as expected at primary and secondary mirror
-    assert(np.allclose(waves[1].spot_radius().value, 1.2))
-    # can't find a definitive reference for the beam diam at the SM, but
-    # the secondary mirror's radius is 14.05 cm
-    # We find that the beam is indeed slightly smaller than that.
-    assert(waves[2].spot_radius() > 13*u.cm )
-    assert(waves[2].spot_radius() < 14*u.cm )
+        ### check the beam size is as expected at primary and secondary mirror
+        assert(np.allclose(waves[1].spot_radius().value, 1.2))
+        # can't find a definitive reference for the beam diam at the SM, but
+        # the secondary mirror's radius is 14.05 cm
+        # We find that the beam is indeed slightly smaller than that.
+        assert(waves[2].spot_radius() > 13*u.cm )
+        assert(waves[2].spot_radius() < 14*u.cm )
 
-    ### check the focal length of the overall system is as expected
-    expected_system_focal_length = 1./(1./fl_pri + 1./fl_sec - (d_pri_sec)/(fl_pri*fl_sec))
-    # n.b. the value calculated here, 57.48 m, is a bit less than the 
-    # generally stated focal length of Hubble, 57.6 meters. Adjusting the
-    # primary-to-secondary spacing by about 100 microns can resolve this
-    # discrepancy. We here opt to stick with the values used in the PROPER
-    # example, to facilitate cross-checking the two codes. 
+        ### check the focal length of the overall system is as expected
+        expected_system_focal_length = 1./(1./fl_pri + 1./fl_sec - (d_pri_sec)/(fl_pri*fl_sec))
+        # n.b. the value calculated here, 57.48 m, is a bit less than the
+        # generally stated focal length of Hubble, 57.6 meters. Adjusting the
+        # primary-to-secondary spacing by about 100 microns can resolve this
+        # discrepancy. We here opt to stick with the values used in the PROPER
+        # example, to facilitate cross-checking the two codes.
 
-    assert(not np.isfinite(waves[0].focal_length))  # plane wave after circular aperture
-    assert(waves[1].focal_length==fl_pri)           # focal len after primary
-    # NB. using astropy.Quantities with np.allclose() doesn't work that well
-    # so pull out the values here:
-    assert(np.allclose(waves[2].focal_length.to(u.m).value,
-           expected_system_focal_length.to(u.m).value)) # focal len after secondary
+        assert(not np.isfinite(waves[0].focal_length))  # plane wave after circular aperture
+        assert(waves[1].focal_length==fl_pri)           # focal len after primary
+        # NB. using astropy.Quantities with np.allclose() doesn't work that well
+        # so pull out the values here:
+        assert(np.allclose(waves[2].focal_length.to(u.m).value,
+            expected_system_focal_length.to(u.m).value)) # focal len after secondary
 
-    ### check the FWHM of the PSF is as expected
-    measured_fwhm = utils.measure_fwhm(psf)
-    expected_fwhm = 1.028*0.5e-6/2.4*206265
-    # we only require this to have < 5% accuracy with respect to the theoretical value
-    # given discrete pixelization etc.
-    assert(np.abs((measured_fwhm-expected_fwhm)/expected_fwhm) < 0.05)
+        ### check the FWHM of the PSF is as expected
+        cen = utils.measure_centroid(psf)
+        measured_fwhm = utils.measure_fwhm(psf, center=cen)
+        expected_fwhm = 1.028*0.5e-6/2.4*206265
+        # we only require this to have < 5% accuracy with respect to the theoretical value
+        # given discrete pixelization etc.
+        assert(np.abs((measured_fwhm-expected_fwhm)/expected_fwhm) < 0.05)
 
-    ### check the various plane types are as expected, including toggling into angular coordinates
-    assert_message = ("Expected FresnelWavefront at plane #{} to have {} == {}, but got {}")
-    system_planetypes = [PlaneType.pupil, PlaneType.pupil, PlaneType.intermediate, PlaneType.image]
-    for idx, (wavefront, planetype) in enumerate(zip(waves, system_planetypes)):
-        assert wavefront.planetype == planetype, assert_message.format(
-            idx, "planetype", plane_type, wavefront.planetype
-        )
+        ### check the various plane types are as expected, including toggling into angular coordinates
+        assert_message = ("Expected FresnelWavefront at plane #{} to have {} == {}, but got {}")
+        system_planetypes = [PlaneType.pupil, PlaneType.pupil, PlaneType.intermediate, PlaneType.image]
+        for idx, (wavefront, planetype) in enumerate(zip(waves, system_planetypes)):
+            assert wavefront.planetype == planetype, assert_message.format(
+                idx, "planetype", plane_type, wavefront.planetype
+            )
 
-    angular_coordinates_flags = [False, False, False, True]
-    for idx, (wavefront, angular_coordinates) in enumerate(zip(waves, angular_coordinates_flags)):
-        assert wavefront.angular_coordinates == angular_coordinates, assert_message.format(
-            idx, "angular_coordinates", angular_coordinates, wavefront.angular_coordinates
-        )
+        angular_coordinates_flags = [False, False, False, True]
+        for idx, (wavefront, angular_coordinates) in enumerate(zip(waves, angular_coordinates_flags)):
+            assert wavefront.angular_coordinates == angular_coordinates, assert_message.format(
+                idx, "angular_coordinates", angular_coordinates, wavefront.angular_coordinates
+            )
 
-    spherical_flags = [False, True, True, False]
-    for idx, (wavefront, spherical) in enumerate(zip(waves, spherical_flags)):
-        assert wavefront.spherical == spherical, assert_message.format(
-            idx, "spherical", spherical, wavefront.spherical
-        )
+        spherical_flags = [False, True, True, False]
+        for idx, (wavefront, spherical) in enumerate(zip(waves, spherical_flags)):
+            assert wavefront.spherical == spherical, assert_message.format(
+                idx, "spherical", spherical, wavefront.spherical
+            )
 
     ### and check that the resulting function is a 2D Airy function
     #create an airy function matching the center part of this array
@@ -350,9 +356,122 @@ def test_fresnel_optical_system_Hubble(display=False):
                               shape=(128,128), pixelscale=psf[0].header['PIXELSCL'],
                              center=(64,64))
 
-    centerpix = hst.npix / hst.beam_ratio / 2
+    centerpix = int(hst.npix / hst.beam_ratio / 2)
     cutout = psf[0].data[centerpix-64:centerpix+64, centerpix-64:centerpix+64] / psf[0].data[centerpix,centerpix]
     assert( np.abs(cutout-airy).max() < 1e-4 )
 
+    if display:
+        plt.figure()
+        utils.display_psf(psf, imagecrop=1)
 
 
+def test_fresnel_FITS_Optical_element(tmpdir, display=False):
+    """ Test that Fresnel works with FITS optical elements.
+
+    Incidentally serves as a test of the fix for the FITS endian issue
+    in recent scipy builds. See https://github.com/mperrin/poppy/issues/213
+
+    Incidentally also serves as a test that we can round-trip an
+    AnalyticOpticalElement into a FITS file and then back into
+    a FITSOpticalElement. See #49
+    import tempfile
+
+    Parameters
+    ----------
+    tmpdir : string
+        temporary directory for output FITS file. To be provided by py.test's
+        tmpdir test fixture.
+
+    """
+    import os.path
+    import astropy.io.fits as fits
+    from .. import wfe
+
+    m1_zernike= wfe.ZernikeWFE(radius=1.2,
+        coefficients=[0,0,0,0,0,1e-7],
+        oversample=0)
+
+    fits_zern = m1_zernike.to_fits(what='opd')
+
+    filename=os.path.join(str(tmpdir), "astigmatism.fits")
+    fits_zern.writeto(filename, overwrite=True)
+    astig_surf = poppy_core.FITSOpticalElement(opd=filename,
+        planetype=poppy_core._INTERMED,
+        oversample=1)
+
+    osys = poppy_core.OpticalSystem()
+    circular_aperture = optics.CircularAperture(radius=1.2)
+    osys.addPupil(circular_aperture)
+    osys.addPupil(astig_surf)
+    osys.addDetector(pixelscale=.01, fov_arcsec=5)
+
+    psf_with_astigmatism, wfronts = osys.calc_psf( display_intermediates=display,return_intermediates=True)
+
+    cx, cy = utils.measure_centroid(psf_with_astigmatism)
+    expected_cx, expected_cy = 499.5, 499.5
+    assert np.abs(cx-expected_cx)< 0.02, "PSF centroid is not as expected in X"
+    assert np.abs(cy-expected_cy)< 0.02, "PSF centroid is not as expected in Y"
+    assert psf_with_astigmatism[0].data.sum() > 0.99, "PSF total flux is not as expected."
+    assert np.abs(psf_with_astigmatism[0].data.max() - 0.00178667) < 1e-5, "PSF peak pixel is not as expected"
+
+
+def test_fresnel_propagate_direct_forward_and_back():
+    npix = 1024
+    wavelen = 2200 * u.nm
+    wf = fresnel.FresnelWavefront(
+        0.5 * u.m, wavelength=wavelen, npix=npix, oversample=4
+    )
+    wf *= optics.CircularAperture(radius=0.5)
+    z = ((wf.pixelscale * u.pix) ** 2 * wf.n / (2200 * u.nm)).to(u.m)
+    start = wf.wavefront.copy()
+    wf.propagate_direct(z)
+    wf.propagate_direct(-z)
+    np.testing.assert_almost_equal(wf.wavefront, start)
+
+
+def test_fresnel_propagate_direct_back_and_forward():
+    npix = 1024
+    wavelen = 2200 * u.nm
+    wf = fresnel.FresnelWavefront(
+        0.5 * u.m, wavelength=wavelen, npix=npix, oversample=4
+    )
+    wf *= optics.CircularAperture(radius=0.5)
+    z = ((wf.pixelscale * u.pix) ** 2 * wf.n / (2200 * u.nm)).to(u.m)
+    start = wf.wavefront.copy()
+    wf.propagate_direct(-z)
+    wf.propagate_direct(z)
+    np.testing.assert_almost_equal(wf.wavefront, start)
+
+
+def test_fresnel_propagate_direct_2forward_and_back():
+    npix = 1024
+    wavelen = 2200 * u.nm
+    wf = fresnel.FresnelWavefront(
+        0.5 * u.m, wavelength=wavelen, npix=npix, oversample=4
+    )
+    wf *= optics.CircularAperture(radius=0.5)
+    z = ((wf.pixelscale * u.pix) ** 2 * wf.n / (2200 * u.nm)).to(u.m)
+
+    wf.propagate_direct(z)
+    start = wf.wavefront.copy()
+    wf.propagate_direct(z)
+    wf.propagate_direct(-z)
+    np.testing.assert_almost_equal(wf.wavefront, start)
+
+def test_fresnel_return_complex():
+    # physical radius values
+    M1_radius = 3. * u.m
+    fl_M1 = M1_radius/2.0
+    # intermediary distances
+
+    tel = fresnel.FresnelOpticalSystem(pupil_diameter=2.4*u.m)
+    gl=fresnel.QuadraticLens(500*u.cm)
+
+    tel.add_optic(gl)
+    tel.add_optic(optics.CircularAperture(radius=M1_radius,name="M1 aperture"))
+    tel.add_optic(optics.ScalarTransmission( name="primary mirror focal plane"), distance=fl_M1)
+
+    psf=tel.calcPSF(return_final=True)
+
+    assert len(psf[1])==1
+    assert np.allclose(psf[1][0].intensity,psf[0][0].data)
