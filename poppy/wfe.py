@@ -449,17 +449,15 @@ class KolmogorovWFE(StatisticalOpticalElement):
         a = self.rand_turbulent(npix)
         
         # get phase spectrum
-        Cn2 = self.get_Cn2(wave.wavelength)
-        phi = self.power_spectrum(Cn2, npix, pixelscale,
-                                  L0=self.L0, l0=self.l0, kind=self.kind)
+        phi = self.power_spectrum(wave=wave, L0=self.L0, l0=self.l0, kind=self.kind)
         
         # calculate OPD
         # Note: Factor dq consequence of delta function having a unit
         opd_FFT = dq*a*np.sqrt(2.0*np.pi*self.dz*phi)
-        opd = np.fft.ifft2(opd_FFT)
-        self.opd = opd.real
+        opd = npix**2*np.fft.ifft2(opd_FFT)
+        self.opd = opd
         
-        return opd.real
+        return opd
     
     @utils.quantity_input(wavelength=u.meter)
     def get_Cn2(self, wavelength):
@@ -504,7 +502,7 @@ class KolmogorovWFE(StatisticalOpticalElement):
         
         sign = float(sign)
         
-        # create zero-mean, unit variance random numbers
+        # create Gaussian, zero-mean, unit variance random numbers
         a = np.random.normal(size=(npix, npix))
         
         # apply required symmetry
@@ -542,21 +540,13 @@ class KolmogorovWFE(StatisticalOpticalElement):
         
         return c
     
-    @utils.quantity_input(Cn2=u.meter**(-2/3), dz=u.meter, pixelscale=u.meter/u.pixel)
-    def power_spectrum(self, Cn2, npix, pixelscale,
-                       L0=None, l0=None, kind='Kolmogorov'):
+    def power_spectrum(self, wave, L0=None, l0=None, kind='Kolmogorov'):
         """ Returns the spatial power spectrum.
         
         Parameters
         -----------------
-        Cn2 : float
-            Index-of-refraction structure constant (m^-2/3).
-        
-        npix : int
-            Number of pixels.
-            
-        pixelscale : astropy quantity
-            The pixel scale (m/pixel).
+        wave : wavefront object
+            Wavefront to calculate the power spectrum for.
         
         L0 : float
             The outer scale of the turbulent eddies (m).
@@ -575,34 +565,41 @@ class KolmogorovWFE(StatisticalOpticalElement):
         R. Frehlich, Appl. Opt. 39, 393 (2000).
         """
         
+        if not any(kind==item for item in ['Kolmogorov', 'Tatarski', 'van Karman', 'Hill']):
+            raise AttributeError('Kind of power spectrum not correctly defined.')
+        
+        Cn2 = self.get_Cn2(wave.wavelength)
+        coordinates = wave.coordinates()
+        npix = coordinates[0].shape[0]
+        pixelscale = wave.pixelscale.to(u.m/u.pixel)
+        
         q = np.fft.fftfreq(npix, d=pixelscale.to(u.m/u.pixel))*2.0*np.pi
         qx, qy = np.meshgrid(q, q)
         
-        q2 = qx**2 + qy**2
-        if kind is 'van Karman':
-            k2 = qx**2 + qy**2
+        q2 = (qx**2 + qy**2)/u.pixel**2
+        if kind=='van Karman':
             if L0 is not None:
-                q2 += 1.0/L0**2
+                q2 += 1.0/L0.to(u.m)**2
             else:
-                raise AttributeError('If van Karman type of turbulent phase \
+                raise AttributeError('If van Karman kind of turbulent phase \
                                      screen is chosen, the outer scale L_0 \
                                      must be provided.')
-        else:
-            q2[0, 0] = np.inf # this is to avoid a possible error message in the next line
+        q2[0, 0] = np.inf # this is to avoid a possible error message in the next line
         
         phi = 0.0330054*Cn2*q2**(-11.0/6.0)
         
-        if kind is 'Tatarski' or kind is 'van Karman' or kind is 'Hill':
+        if kind=='Tatarski' or kind=='van Karman' or kind=='Hill':
             if l0 is not None:
-                if kind is 'Tatarski' or kind is 'van Karman':
-                    m = (5.92/l0)**2
+                k2 = (qx**2 + qy**2)/u.pixel**2
+                if kind=='Tatarski' or kind=='van Karman':
+                    m = (5.92/l0.to(u.m))**2
                     phi *= np.exp(-k2/m)
-                elif kind is 'Hill':
-                    m = np.sqrt(k2)*l0
+                elif kind=='Hill':
+                    m = np.sqrt(k2)*l0.to(u.m)
                     phi *= (1.0 + 0.70937*m + 2.8235*m**2
                             - 0.28086*m**3 + 0.08277*m**4) * np.exp(-1.109*m)
             else:
-                raise AttributeError('If van Karman, Hill, or Tatarski type \
+                raise AttributeError('If van Karman, Hill, or Tatarski kind \
                                      of turbulent phase screen is chosen, the \
                                      inner scale l_0 must be provided.')
         

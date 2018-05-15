@@ -13,6 +13,8 @@ WAVELENGTH = 1e-6
 RADIUS = 1.0
 NPIX = 101
 DIAM = 3.0
+CN2 = 1e-14*u.m**(-2/3)
+DZ = 50.0*u.m
 
 def test_ZernikeAberration():
     # verify that we can reproduce the same behavior as ThinLens
@@ -88,36 +90,67 @@ def test_ParameterizedAberration():
     assert stddev < 1e-16, ("ParameterizedAberration disagrees with "
                             "ZernikeAberration! stddev {}".format(stddev))
 
-def test_KolmogorovWFE():
+def test_KolmogorovWFE_stats():
+    # verify statistics of random numbers
+    KolmogorovWFE = wfe.KolmogorovWFE(Cn2=CN2, dz=DZ)
+    npix = 2048
+    a = KolmogorovWFE.rand_turbulent(npix)
+    b = KolmogorovWFE.rand_symmetrized(npix, 1)
+    c = KolmogorovWFE.rand_symmetrized(npix, -1)
     
-    # test Cn2 calculation from Fried parameter
-    Cn2 = 1e-14*u.m**(-2/3)
-    lam = 1064e-9*u.m
+    assert(np.round(np.abs(np.mean(a)), 2) == np.round(0.0, 2))
+    assert(np.round(np.var(a), 2) == np.round(1.0, 2))
+    assert(np.round(np.mean(b), 2) == np.round(0.0, 2))
+    assert(np.round(np.var(b), 2) == np.round(1.0, 2))
+    assert(np.round(np.mean(c), 2) == np.round(0.0, 2))
+    assert(np.round(np.var(c), 2) == np.round(1.0, 2))
+
+def test_KolmogorovWFE_Cn2():
+    # verifiy correct calculation of Cn2 from Fried parameter
+    lam = WAVELENGTH*u.m
     dz = 50.0*u.m
-    r0 = 0.185*(lam**2/Cn2/dz)**(3.0/5.0)
+    r0 = 0.185*(lam**2/CN2/dz)**(3.0/5.0) # analytical equation
     KolmogorovWFE = wfe.KolmogorovWFE(r0=r0, dz=dz)
     Cn2_test = KolmogorovWFE.get_Cn2(lam)
-    assert(np.round(Cn2_test.value, 9) == np.round(Cn2.value, 9))
     
-#    # test random number symmetry
-#    num_ensemble = 10
-#    npix = 128
-#    
-#    average = np.zeros((npix, npix, npix, npix), dtype=complex)
-#    for m in range(num_ensemble):
-#        # crate a realization
-#        a = KolmogorovWFE.rand_turbulent(npix)
-#        
-#        average = 0.0
-#        for l in range(npix):
-#            for lp in range(npix):
-#                for j in range(npix):
-#                    for jp in range(npix):
-#                        average[l ,lp, j, jp] = a[l, j]*np.conj(a[lp, jp])
-#                        if l == lp and j == jp:
-#                            average[l ,lp, j, jp] -= 1.0
-#    
-#    average /= num_ensemble
+    assert(np.round(Cn2_test.value, 9) == np.round(CN2.value, 9))
+
+def test_KolmogorovWFE_ps():
+    # verifiy that first element of power spectrum is zero
+    npix = 64
+    wf = poppy_core.Wavefront(wavelength=WAVELENGTH*u.m,
+                              npix=npix,
+                              diam=3.0)
     
-        
-        
+    KolmogorovWFE = wfe.KolmogorovWFE(Cn2=CN2, dz=DZ)
+    
+    ps1 = KolmogorovWFE.power_spectrum(wf, kind='Kolmogorov')
+    ps2 = KolmogorovWFE.power_spectrum(wf, l0=1*u.cm, kind='Tatarski')
+    ps3 = KolmogorovWFE.power_spectrum(wf, L0=10*u.m, l0=1*u.cm, kind='van Karman')
+    ps4 = KolmogorovWFE.power_spectrum(wf, l0=1*u.cm, kind='Hill')
+    
+    assert(np.round(ps1[0,0].value, 9) == np.round(0.0, 9))
+    assert(np.round(ps2[0,0].value, 9) == np.round(0.0, 9))
+    assert(np.round(ps3[0,0].value, 9) == np.round(0.0, 9))
+    assert(np.round(ps4[0,0].value, 9) == np.round(0.0, 9))
+
+def test_KolmogorovWFE_correlation():
+    # verify correlation of random numbers
+    KolmogorovWFE = wfe.KolmogorovWFE(Cn2=CN2, dz=DZ)
+    num_ensemble = 2000
+    npix = 64
+    
+    average = np.zeros((npix, npix), dtype=complex)
+    for j in range(num_ensemble):
+        a = KolmogorovWFE.rand_turbulent(npix)
+        for l in range(npix):
+            for m in range(npix):
+                average[l, m] += np.sum(a[:, l])*np.sum(np.conj(a[:, m]))/num_ensemble/npix
+    
+    for l in range(npix):
+        for m in range(npix):
+            if l == m:
+                average[l, m] -= 1.0
+    
+    assert(np.max(np.abs(average.real)) < 0.1)
+    assert(np.max(np.abs(average.imag)) < 0.1)
