@@ -122,12 +122,12 @@ def test_KolmogorovWFE_ps():
                               npix=npix,
                               diam=3.0)
     
-    KolmogorovWFE = wfe.KolmogorovWFE(Cn2=CN2, dz=DZ)
+    KolmogorovWFE = wfe.KolmogorovWFE(Cn2=CN2, dz=DZ, inner_scale=1*u.cm, outer_scale=10*u.m)
     
     ps1 = KolmogorovWFE.power_spectrum(wf, kind='Kolmogorov')
-    ps2 = KolmogorovWFE.power_spectrum(wf, l0=1*u.cm, kind='Tatarski')
-    ps3 = KolmogorovWFE.power_spectrum(wf, L0=10*u.m, l0=1*u.cm, kind='von Karman')
-    ps4 = KolmogorovWFE.power_spectrum(wf, l0=1*u.cm, kind='Hill')
+    ps2 = KolmogorovWFE.power_spectrum(wf, kind='Tatarski')
+    ps3 = KolmogorovWFE.power_spectrum(wf, kind='von Karman')
+    ps4 = KolmogorovWFE.power_spectrum(wf, kind='Hill')
     
     assert(np.round(ps1[0,0].value, 9) == np.round(0.0, 9))
     assert(np.round(ps2[0,0].value, 9) == np.round(0.0, 9))
