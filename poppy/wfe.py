@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 """
 Analytic optical element classes to introduce a specified wavefront
 error in an OpticalSystem
@@ -382,9 +384,27 @@ class KolmogorovWFE(StatisticalOpticalElement):
     
     Parameters
     -----------------
-    wave : wavefront object
-        Wavefront to calculate the phase screen for.
-
+    r0 : astropy.quantity
+        Fried parameter (m).
+    
+    Cn2 : astropy.quantity
+        Index-of-refraction structure constant (m^{-2/3}).
+    
+    dz : astropy.quantity
+        Propagation distance (m).
+    
+    inner_scale : astropy.quantity
+        Inner scale of the turbulence (m). The inner scale affects the
+        calculation results if kind = 'von Karman', 'Tatarski', or 'Hill'.
+    
+    outer_scale : astropy.quantity
+        Outer scale of the turbulence (m). The outer scale only affects the
+        calculation results if kind='von Karman'.
+    
+    kind : string
+        Kind of the spatial power spectrum. Must be one of 'Kolmogorov',
+        'Tatarski', 'von Karman', 'Hill'.
+    
     References
     -------------------
     For a general overview of the Kolmogorov theory, read
@@ -394,19 +414,20 @@ class KolmogorovWFE(StatisticalOpticalElement):
     Other relevant references are mentioned in the respective functions.
     """
     
-    @utils.quantity_input(r0=u.meter, Cn2=u.meter**(-2/3), dz=u.meter, l0=u.meter, L0=u.meter)
-    def __init__(self, name="Kolmogorov WFE", r0=None, Cn2=None,
-                 dz=None, l0=None, L0=None, kind='Kolmogorov', **kwargs):
+    @utils.quantity_input(r0=u.meter, Cn2=u.meter**(-2/3), dz=u.meter,
+                          inner_scale=u.meter, outer_scale=u.meter)
+    def __init__(self, name="Kolmogorov WFE", r0=None, Cn2=None, dz=None,
+                 inner_scale=None, outer_scale=None, kind='Kolmogorov', **kwargs):
         
         if dz is None and not all(item is not None for item in [r0, Cn2]):
-            raise AttributeError('To prepare a turbulent phase screen, \
-                                 dz and either Cn2 or r0 must be given.')
+            raise ValueError('To prepare a turbulent phase screen, \
+                             dz and either Cn2 or r0 must be given.')
         
         self.r0 = r0
         self.Cn2 = Cn2
         self.dz = dz.to(u.m)
-        self.l0 = l0
-        self.L0 = L0
+        self.inner_scale = inner_scale
+        self.outer_scale = outer_scale
         self.kind = kind
         
         StatisticalOpticalElement.__init__(self, name=name, **kwargs)
@@ -436,8 +457,7 @@ class KolmogorovWFE(StatisticalOpticalElement):
         D. L. Knepp, Proc. IEEE 71, 722 (1983).
         """
         
-        coordinates = wave.coordinates()
-        npix = coordinates[0].shape[0]
+        npix = wave.shape[0]
         pixelscale = wave.pixelscale.to(u.m/u.pixel)
         dq = 2.0*np.pi/npix/pixelscale
         
@@ -445,7 +465,7 @@ class KolmogorovWFE(StatisticalOpticalElement):
         a = self.rand_turbulent(npix)
         
         # get phase spectrum
-        phi = self.power_spectrum(wave=wave, L0=self.L0, l0=self.l0, kind=self.kind)
+        phi = self.power_spectrum(wave=wave, kind=self.kind)
         
         # calculate OPD
         # Note: Factor dq consequence of delta function having a unit
@@ -497,6 +517,9 @@ class KolmogorovWFE(StatisticalOpticalElement):
         Appl. Phys. 10, 129 (1976).
         """
         
+        if np.abs(sign) != 1:
+            raise ValueError("sign must be either +1 or -1")
+        
         sign = float(sign)
         
         # create Gaussian, zero-mean, unit variance random numbers
@@ -537,7 +560,7 @@ class KolmogorovWFE(StatisticalOpticalElement):
         
         return c
     
-    def power_spectrum(self, wave, L0=None, l0=None, kind='Kolmogorov'):
+    def power_spectrum(self, wave, kind='Kolmogorov'):
         """ Returns the spatial power spectrum.
         
         Parameters
@@ -545,15 +568,9 @@ class KolmogorovWFE(StatisticalOpticalElement):
         wave : wavefront object
             Wavefront to calculate the power spectrum for.
         
-        L0 : float
-            The outer scale of the turbulent eddies (m).
-        
-        l0 : float
-            The inner scale of the turbulent eddies (m).
-        
         kind : string
             The type of the power spectrum, must be one of 'Kolmogorov',
-            'Tatarski', 'van Karman', 'Hill'.
+            'Tatarski', 'von Karman', 'Hill'.
         
         References
         -------------------
@@ -562,8 +579,8 @@ class KolmogorovWFE(StatisticalOpticalElement):
         R. Frehlich, Appl. Opt. 39, 393 (2000).
         """
         
-        if not any(kind==item for item in ['Kolmogorov', 'Tatarski', 'van Karman', 'Hill']):
-            raise AttributeError('Kind of power spectrum not correctly defined.')
+        if not any(kind==item for item in ['Kolmogorov', 'Tatarski', 'von Karman', 'Hill']):
+            raise ValueError('Kind of power spectrum not correctly defined.')
         
         Cn2 = self.get_Cn2(wave.wavelength)
         coordinates = wave.coordinates()
@@ -574,31 +591,31 @@ class KolmogorovWFE(StatisticalOpticalElement):
         qx, qy = np.meshgrid(q, q)
         
         q2 = (qx**2 + qy**2)/u.pixel**2
-        if kind=='van Karman':
-            if L0 is not None:
-                q2 += 1.0/L0.to(u.m)**2
+        if kind=='von Karman':
+            if self.outer_scale is not None:
+                q2 += 1.0/self.outer_scale.to(u.m)**2
             else:
-                raise AttributeError('If van Karman kind of turbulent phase \
-                                     screen is chosen, the outer scale L_0 \
-                                     must be provided.')
+                raise ValueError('If von Karman kind of turbulent phase \
+                                 screen is chosen, the outer scale L_0 \
+                                 must be provided.')
         q2[0, 0] = np.inf # this is to avoid a possible error message in the next line
         
         phi = 0.0330054*Cn2*q2**(-11.0/6.0)
         
-        if kind=='Tatarski' or kind=='van Karman' or kind=='Hill':
-            if l0 is not None:
+        if kind=='Tatarski' or kind=='von Karman' or kind=='Hill':
+            if self.inner_scale is not None:
                 k2 = (qx**2 + qy**2)/u.pixel**2
-                if kind=='Tatarski' or kind=='van Karman':
-                    m = (5.92/l0.to(u.m))**2
+                if kind=='Tatarski' or kind=='von Karman':
+                    m = (5.92/self.inner_scale.to(u.m))**2
                     phi *= np.exp(-k2/m)
                 elif kind=='Hill':
-                    m = np.sqrt(k2)*l0.to(u.m)
+                    m = np.sqrt(k2)*self.inner_scale.to(u.m)
                     phi *= (1.0 + 0.70937*m + 2.8235*m**2
                             - 0.28086*m**3 + 0.08277*m**4) * np.exp(-1.109*m)
             else:
-                raise AttributeError('If van Karman, Hill, or Tatarski kind \
-                                     of turbulent phase screen is chosen, the \
-                                     inner scale l_0 must be provided.')
+                raise ValueError('If von Karman, Hill, or Tatarski kind \
+                                 of turbulent phase screen is chosen, the \
+                                 inner scale l_0 must be provided.')
         
         return phi
 

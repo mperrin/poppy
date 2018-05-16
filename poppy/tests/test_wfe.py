@@ -106,7 +106,7 @@ def test_KolmogorovWFE_stats():
     assert(np.round(np.var(c), 2) == np.round(1.0, 2))
 
 def test_KolmogorovWFE_Cn2():
-    # verifiy correct calculation of Cn2 from Fried parameter
+    # verify correct calculation of Cn2 from Fried parameter
     lam = WAVELENGTH*u.m
     dz = 50.0*u.m
     r0 = 0.185*(lam**2/CN2/dz)**(3.0/5.0) # analytical equation
@@ -116,7 +116,7 @@ def test_KolmogorovWFE_Cn2():
     assert(np.round(Cn2_test.value, 9) == np.round(CN2.value, 9))
 
 def test_KolmogorovWFE_ps():
-    # verifiy that first element of power spectrum is zero
+    # verify that first element of power spectrum is zero
     npix = 64
     wf = poppy_core.Wavefront(wavelength=WAVELENGTH*u.m,
                               npix=npix,
@@ -126,7 +126,7 @@ def test_KolmogorovWFE_ps():
     
     ps1 = KolmogorovWFE.power_spectrum(wf, kind='Kolmogorov')
     ps2 = KolmogorovWFE.power_spectrum(wf, l0=1*u.cm, kind='Tatarski')
-    ps3 = KolmogorovWFE.power_spectrum(wf, L0=10*u.m, l0=1*u.cm, kind='van Karman')
+    ps3 = KolmogorovWFE.power_spectrum(wf, L0=10*u.m, l0=1*u.cm, kind='von Karman')
     ps4 = KolmogorovWFE.power_spectrum(wf, l0=1*u.cm, kind='Hill')
     
     assert(np.round(ps1[0,0].value, 9) == np.round(0.0, 9))
