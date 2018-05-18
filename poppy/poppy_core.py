@@ -128,6 +128,7 @@ class Wavefront(object):
         """Wavelength in meters (or other unit if specified)"""
         if isinstance(self.wavelength, u.quantity.Quantity):
             self._wavelength_m = self.wavelength.to(u.m).value
+            self.wavelength = self.wavelength.to(u.m)
         else:
             self._wavelength_m = self.wavelength
         self.diam = diam          # pupil plane size in meters

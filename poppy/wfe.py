@@ -362,6 +362,8 @@ class ThermalBloomingWFE(WavefrontError):
                  p0=101.325*u.kPa, T0=300.0*u.K, direction='x',
                  isobaric=False, **kwargs):
         
+        super(ThermalBloomingWFE, self).__init__(name=name, **kwargs)
+        
         self.abs_coeff = abs_coeff.to(1/u.m).value
         self.dz = dz.to(u.m).value
         self.v0x = v0x.to(u.m/u.s).value
@@ -376,8 +378,6 @@ class ThermalBloomingWFE(WavefrontError):
         self.isobaric = isobaric
         self.gamma = self.cp/self.cV
         self.cs2 = self.gamma*self.p0/self.rho0
-        
-        super(ThermalBloomingWFE, self).__init__(name=name, **kwargs)
         
     def nat_conv_vel(self, wave):
         """ Approximation for natural convection velocity (m.s^-1).
