@@ -423,14 +423,14 @@ class KolmogorovWFE(StatisticalOpticalElement):
             raise ValueError('To prepare a turbulent phase screen, \
                              dz and either Cn2 or r0 must be given.')
         
+        super(KolmogorovWFE, self).__init__(name=name, **kwargs)
+        
         self.r0 = r0
         self.Cn2 = Cn2
         self.dz = dz.to(u.m)
         self.inner_scale = inner_scale
         self.outer_scale = outer_scale
         self.kind = kind
-        
-        StatisticalOpticalElement.__init__(self, name=name, **kwargs)
     
     def get_opd(self, wave):
         """ Returns an optical path difference for a turbulent phase screen.
