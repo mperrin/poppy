@@ -3,11 +3,9 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
-import os
 import six
 import scipy.ndimage.interpolation
 import scipy.signal
-import matplotlib
 import astropy.io.fits as fits
 import astropy.units as u
 import warnings
@@ -413,7 +411,6 @@ class ContinuousDeformableMirror(optics.AnalyticOpticalElement):
 
         kwargs['crosshairs']= crosshairs
         kwargs['what'] = what
-        self.opd = self.surface
         returnvalue = optics.AnalyticOpticalElement.display(self, *args, **kwargs)
 
         # Annotations not yet smart enough to deal with two panels

@@ -171,7 +171,11 @@ class Wavefront(object):
 
     def normalize(self):
         """Set this wavefront's total intensity to 1 """
-        self.wavefront /= np.sqrt(self.total_intensity)
+        sqrt_ti = np.sqrt(self.total_intensity)
+        if sqrt_ti == 0:
+            _log.warning("Total intensity is zero when trying to normalize the wavefront. Cannot normalize.")
+        else:
+            self.wavefront /= sqrt_ti
 
     def __imul__(self, optic):
         """Multiply a Wavefront by an OpticalElement or scalar"""
@@ -1347,6 +1351,9 @@ class OpticalSystem(object):
     def __getitem__(self, num):
         return self.planes[num]
 
+    def __len__(self):
+        return len(self.planes)
+
     # methods for dealing with wavefronts:
     @utils.quantity_input(wavelength=u.meter)
     def input_wavefront(self, wavelength=2e-6*u.meter):
@@ -2175,7 +2182,7 @@ class ArrayOpticalElement(OpticalElement):
     additional convenience features in the initializer..
     """
     def __init__(self, opd=None, transmission=None, pixelscale=None, **kwargs):
-        super().__init__(**kwargs)
+        super(ArrayOpticalElement,self).__init__(**kwargs)
         if opd is not None:
             self.opd = opd
         if transmission is not None:
