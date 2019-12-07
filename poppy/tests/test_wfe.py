@@ -6,6 +6,7 @@ from .. import poppy_core
 from .. import optics
 from .. import zernike
 from .. import wfe
+from .. import physical_wavefront
 
 NWAVES = 0.5
 WAVELENGTH = 1e-6
@@ -216,5 +217,44 @@ def test_StatisticalPSDWFE(index=3, seed=123456, plot=False):
         plt.legend()
 
 
+def test_ThermalBlomingWFE_nat_conv_vel():
+    
+    # Verify that the natural convection velocity is calculated correctly for a given set of parameters
+    wf = physical_wavefront.PhysicalFresnelWavefront(beam_radius=5*14.15*u.cm,
+                                        wavelength=10.6*u.um,
+                                        units=u.m,
+                                        npix=512,
+                                        oversample=2,
+                                        M2=1.0, n0=1.00027398)
+    wf.scale_power(100.0e3)
+    
+    phase_screen = wfe.ThermalBloomingWFE(7e-7/u.cm, 2.0*u.km, v0x=200.0*u.cm/u.s)
+    res = phase_screen.nat_conv_vel(wf)
+    assert(np.round(res, 9) == np.round(0.07287728078361912, 9))
 
 
+def test_ThermalBloomingWFE_get_opd():
+    
+    # Verify that the opd is calculated correctly for a given set of parameters. This
+    # implicitly tests all other functions from the class.
+    wf = physical_wavefront.PhysicalFresnelWavefront(beam_radius=5*14.15*u.cm,
+                                                     wavelength=10.6*u.um,
+                                                     units=u.m,
+                                                     npix=512,
+                                                     oversample=2,
+                                                     M2=1.0, n0=1.00027398)
+    wf.scale_power(100.0e3)
+    
+    phase_screen = wfe.ThermalBloomingWFE(7e-7/u.cm, 2.0*u.km, v0x=200.0*u.cm/u.s, direction='x', isobaric=True)
+    opd = phase_screen.get_opd(wf)
+    assert(opd.shape[0] == 1024)
+    assert(opd.shape[1] == 1024)
+    assert(np.round(np.max(opd), 9) == np.round(0.0, 9))
+    assert(np.round(np.min(opd), 9) == np.round(-3.820632130308915e-06, 9))
+    
+    phase_screen = wfe.ThermalBloomingWFE(7e-7/u.cm, 2.0*u.km, v0x=200.0*u.cm/u.s, direction='x', isobaric=False)
+    opd = phase_screen.get_opd(wf)
+    assert(opd.shape[0] == 1024)
+    assert(opd.shape[1] == 1024)
+    assert(np.round(np.max(opd), 9) == np.round(1.909383278158297e-06, 9))
+    assert(np.round(np.min(opd), 9) == np.round(-2.3869888034039016e-06, 9))
