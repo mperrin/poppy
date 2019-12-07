@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Licensed under a 3-clause BSD style license - see LICENSE.rst
+# Licensed under a 3-clause BSD style license - see LICENSE.md
 #
 # POPPY documentation build configuration file
 #
@@ -28,6 +28,7 @@
 import datetime
 import os
 import sys
+import stsci_rtd_theme
 
 try:
     import astropy_helpers
@@ -37,6 +38,10 @@ except ImportError:
         a_h_path = os.path.abspath(os.path.join('..', 'astropy_helpers'))
         if os.path.isdir(a_h_path):
             sys.path.insert(1, a_h_path)
+
+
+def setup(app):
+    app.add_stylesheet("stsci.css")
 
 # Load all of the global Astropy configuration
 from astropy_helpers.sphinx.conf import *
@@ -51,8 +56,35 @@ conf = ConfigParser()
 conf.read([os.path.join(os.path.dirname(__file__), '..', 'setup.cfg')])
 setup_cfg = dict(conf.items('metadata'))
 
+# If extensions (or modules to document with autodoc) are in another directory,
+# add these directories to sys.path here. If the directory is relative to the
+# documentation root, use os.path.abspath to make it absolute, like shown here.
+sys.path.insert(0, os.path.abspath('../'))
+sys.path.insert(0, os.path.abspath('../poppy/'))
+sys.path.insert(0, os.path.abspath('exts/'))
+extensions = [
+    'numfig',
+    'sphinx.ext.autodoc',
+    'sphinx.ext.intersphinx',
+    'sphinx.ext.todo',
+    'sphinx.ext.inheritance_diagram',
+    'sphinx.ext.viewcode',
+    'sphinx.ext.autosummary',
+    'sphinx_automodapi.automodapi',
+    'sphinx_issues'
+    ]
+numpydoc_show_class_members = False
+
+# The name of the Pygments (syntax highlighting) style to use.
+pygments_style = 'sphinx'
+
 # -- General configuration ----------------------------------------------------
 
+
+extensions.append('nbsphinx')
+extensions.append('sphinx.ext.mathjax')
+
+suppress_warnings = ["ref.keyword"]
 # By default, highlight as Python 3.
 highlight_language = 'python3'
 
@@ -66,6 +98,8 @@ highlight_language = 'python3'
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
 exclude_patterns.append('_templates')
+exclude_patterns.append('_build')
+exclude_patterns.append('**.ipynb_checkpoints')
 
 # This is added to the end of RST files - a good place to put substitutions to
 # be used globally.
@@ -74,9 +108,17 @@ rst_epilog += """
 
 # -- Project information ------------------------------------------------------
 
+
+# Github integration via sphinx-issues plugin
+# See https://github.com/sloria/sphinx-issues
+
+# Github repo
+issues_github_path = "spacetelescope/poppy"
+
+
 # This does not *have* to match the package name, but typically does
 project = setup_cfg['package_name']
-author = u'Association of Universities for Research in Astronomy'
+author = setup_cfg['author']
 copyright = '{0}, {1}'.format(
     datetime.datetime.now().year, author)
 
@@ -92,7 +134,6 @@ version = package.__version__.split('-', 1)[0]
 # The full version, including alpha/beta/rc tags.
 release = package.__version__
 
-
 # -- Options for HTML output ---------------------------------------------------
 
 # A NOTE ON HTML THEMES
@@ -102,20 +143,14 @@ release = package.__version__
 # variables set in the global configuration. The variables set in the
 # global configuration are listed below, commented out.
 
-html_theme_options = {
-    'logotext1': '',  # white,  semi-bold
-    'logotext2': 'POPPY',     # orange, light
-    'logotext3': ' documentation'   # white,  light
-    }
-
 # Add any paths that contain custom themes here, relative to this directory.
 # To use a different custom theme, add the directory containing the theme.
-html_theme_path = ['_themes']
+html_theme_path = [stsci_rtd_theme.get_html_theme_path()]
 
 # The theme to use for HTML and HTML Help pages.  See the documentation for
 # a list of builtin themes. To override the custom theme, set this to the
 # name of a builtin theme or the name of a custom theme in html_theme_path.
-html_theme = 'theme_webbpsf'
+html_theme = 'stsci_rtd_theme'
 
 # Custom sidebar templates, maps document names to template names.
 #html_sidebars = {}

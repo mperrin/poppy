@@ -24,22 +24,27 @@ The Team
 POPPY is developed primarily by a team of astronomers at the `Space Telescope
 Science Insitute <http://www.stsci.edu/>`_, but is open to contributions from
 scientists and software developers around the world. Development takes place
-on Github at http://github.com/mperrin/poppy . See that page for the most up-to-date
+on Github at http://github.com/spacetelescope/poppy . See that page for the most up-to-date
 list of contributors. 
 
 Direct contributors to POPPY code
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
- * Marshall Perrin (@mperrin)
- * Joseph Long (@josephoenix)
- * Ewan Douglas (@douglase)
- * Neil Zimmerman (@neilzim)
- * Anand Sivaramakrishnan (@anand0xff)
- * Maciek Grochowicz (@maciekgroch)
- * Ted Corcovilos (@corcoted)
- * Kyle Douglass (@kmdouglas)
- * Christine Slocum (@cslocum)
- * Matt Mechtley (@mmechtley)
+ * Marshall Perrin (:user:`mperrin`)
+ * Joseph Long (:user:`josephoenix`)
+ * Ewan Douglas (:user:`douglase`)
+ * Shannon Osborne (:user:`shanosborne`)
+ * Neil Zimmerman (:user:`neilzim`)
+ * Anand Sivaramakrishnan (:user:`anand0xff`)
+ * Maciek Grochowicz (:user:`maciekgroch`)
+ * Phillip Springer (:user:`daphil`)
+ * Ted Corcovilos (:user:`corcoted`)
+ * Kyle Douglass (:user:`kmdouglas`)
+ * Christine Slocum (:user:`cslocum`)
+ * Matt Mechtley (:user:`mmechtley`)
+ * Scott Will (:user:`sdwill`)
+ * Iva Laginja (:user:`ivalaginja`)
+ * Mike Fitzgerald (:user:`astrofitz`)
 
 Indirect Contributors (algorithms, advice, ideas, inspirations)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

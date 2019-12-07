@@ -8,13 +8,16 @@ POPPY: Physical Optics Propagation in Python
    :target: https://pypi.python.org/pypi/poppy
    :alt: Badge showing current released PyPI version
 
-.. image:: https://travis-ci.org/mperrin/poppy.svg?branch=master
-   :target: https://travis-ci.org/mperrin/poppy
+.. image:: https://travis-ci.org/spacetelescope/poppy.svg?branch=master
+   :target: https://travis-ci.org/spacetelescope/poppy
    :alt: Badge showing continuous integration test status
 
-.. image:: https://coveralls.io/repos/mperrin/poppy/badge.svg
-   :target: https://coveralls.io/r/mperrin/poppy
+.. image:: https://coveralls.io/repos/spacetelescope/poppy/badge.svg
+   :target: https://coveralls.io/r/spacetelescope/poppy
    :alt: Badge showing testing code coverage percentage
+
+.. image:: https://img.shields.io/badge/ascl-1602.018-blue.svg?colorB=262255
+   :target: http://ascl.net/1602.018
 
 POPPY (**P**\ hysical **O**\ ptics **P**\ ropagation in **Py**\ thon) is a Python package that simulates physical optical propagation including diffraction. It implements a flexible framework for modeling Fraunhofer and Fresnel diffraction and point spread function formation, particularly in the context of astronomical telescopes.
 
@@ -22,7 +25,7 @@ POPPY was developed as part of a simulation package for the James Webb Space Tel
 
 For documentation, see http://poppy-optics.readthedocs.io/
 
-Code by Marshall Perrin, Joseph Long, Ewan Douglas, Neil Zimmerman, Anand Sivaramakrishnan, Kyle Douglass, Maciek Grochowicz & Ted Corcovilos, with additional contributions from Remi Soummer, Kyle Van Gorkom, Christine Slocum, and others on the Astropy team.
+Code by Marshall Perrin, Joseph Long, Ewan Douglas, Neil Zimmerman, Anand Sivaramakrishnan, Shannon Osborne, Kyle Douglass, Maciek Grochowicz, Phillip Springer, & Ted Corcovilos, with additional contributions from Remi Soummer, Kyle Van Gorkom, Jonathan Fraine, Christine Slocum, Roman Yurchak, and others on the Astropy team.
 
 Projects using POPPY
 --------------------

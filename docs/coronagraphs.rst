@@ -4,9 +4,9 @@ Efficient Lyot coronagraph propagation
 
 
 Poppy has extensive functionality to faciliate the modeling of coronagraph point spread functions. In addition to the general summary of those capabilities here, see the examples in the notebooks subdirectory:
-`POPPY Examples <https://github.com/mperrin/poppy/blob/master/notebooks/POPPY%20Examples.ipynb>`_
+`POPPY Examples <https://github.com/spacetelescope/poppy/blob/master/notebooks/POPPY%20Examples.ipynb>`_
 and
-`MatrixFTCoronagraph_demo <https://github.com/mperrin/poppy/blob/master/notebooks/MatrixFTCoronagraph_demo.ipynb>`_.
+`MatrixFTCoronagraph_demo <https://github.com/spacetelescope/poppy/blob/master/notebooks/MatrixFTCoronagraph_demo.ipynb>`_.
 
 Introduction
 --------------
@@ -62,12 +62,12 @@ The following code performs the same calculation both with semi-analytical and F
         plt.figure(3)
         plt.clf()
         plt.subplot(121)
-        poppy.utils.display_PSF(psf_fft, title="FFT")
+        poppy.utils.display_psf(psf_fft, title="FFT")
         plt.subplot(122)
-        poppy.utils.display_PSF(psf_sam, title="SAM")
+        poppy.utils.display_psf(psf_sam, title="SAM")
 
-        print "Elapsed time, FFT:  %.3s" % (t1f-t0f)
-        print "Elapsed time, SAM:  %.3s" % (t1s-t0s)
+        print("Elapsed time, FFT:  %.3s" % (t1f-t0f))
+        print("Elapsed time, SAM:  %.3s" % (t1s-t0s))
 
 
 .. image:: ./example_SAM_comparison.png
@@ -112,6 +112,7 @@ Again we will compare the execution time with the FFT case.::
                                                                  return_intermediates=True)
         t1_fft = time.time()
         
+        plt.figure()
         t0_mft = time.time()
         annFPM_mft_psf, annFPM_mft_interm = matrixFTcoron_annFPM_osys.calc_psf(wavelen, display_intermediates=True,\
                                                                      return_intermediates=True)
@@ -122,14 +123,14 @@ Plot the results::
          plt.figure(figsize=(16,3.5))
          plt.subplots_adjust(left=0.10, right=0.95, bottom=0.02, top=0.98, wspace=0.2, hspace=None)
          plt.subplot(131)
-         ax_fft, cbar_fft = poppy.display_PSF(annFPM_fft_psf, vmin=1e-10, vmax=1e-7, title='Annular FPM Lyot coronagraph, FFT',
+         ax_fft, cbar_fft = poppy.display_psf(annFPM_fft_psf, vmin=1e-10, vmax=1e-7, title='Annular FPM Lyot coronagraph, FFT',
                                      return_ax=True)
          plt.subplot(132)
-         poppy.display_PSF(annFPM_mft_psf, vmin=1e-10, vmax=1e-7, title='Annular FPM Lyot coronagraph, Matrix FT')
+         poppy.display_psf(annFPM_mft_psf, vmin=1e-10, vmax=1e-7, title='Annular FPM Lyot coronagraph, Matrix FT')
          plt.subplot(133)
          diff_vmin = np.min(annFPM_mft_psf[0].data - annFPM_fft_psf[0].data)
          diff_vmax = np.max(annFPM_mft_psf[0].data - annFPM_fft_psf[0].data)
-         poppy.display_PSF_difference(annFPM_mft_psf, annFPM_fft_psf, vmin=diff_vmin, vmax=diff_vmax, cmap='gist_heat')
+         poppy.display_psf_difference(annFPM_mft_psf, annFPM_fft_psf, vmin=diff_vmin, vmax=diff_vmax, cmap='gist_heat')
          plt.title('Difference (MatrixFT - FFT)')
 
 .. image:: ./example_matrixFT_FFT_comparison.png
@@ -140,11 +141,11 @@ Plot the results::
 Print some of the propagation parameters:: 
 
          lamoD_asec = wavelen/fftcoron_annFPM_osys.planes[0].pupil_diam * 180/np.pi * 3600
-         print "System diffraction resolution element scale (lambda/D) in arcsec: %.3f" % lamoD_asec
-         print "Array width in first focal plane, FFT: %d" % annFPM_fft_interm[1].amplitude.shape[0]
-         print "Array width in first focal plane, MatrixFT: %d" % annFPM_mft_interm[1].amplitude.shape[0]
-         print "Array width in Lyot plane, FFT: %d" % annFPM_fft_interm[2].amplitude.shape[0]
-         print "Array width in Lyot plane, MatrixFT: %d" % annFPM_mft_interm[2].amplitude.shape[0]
+         print("System diffraction resolution element scale (lambda/D) in arcsec: %.3f" % lamoD_asec)
+         print("Array width in first focal plane, FFT: %d" % annFPM_fft_interm[1].amplitude.shape[0])
+         print("Array width in first focal plane, MatrixFT: %d" % annFPM_mft_interm[1].amplitude.shape[0])
+         print("Array width in Lyot plane, FFT: %d" % annFPM_fft_interm[2].amplitude.shape[0])
+         print("Array width in Lyot plane, MatrixFT: %d" % annFPM_mft_interm[2].amplitude.shape[0])
 
          System diffraction resolution element scale (lambda/D) in arcsec: 0.103
          Array width in first focal plane, FFT: 8192
@@ -154,8 +155,8 @@ Print some of the propagation parameters::
 
 Compare the elapsed time::
 
-         print "Elapsed time, FFT:  %.1f s" % (t1_fft-t0_fft)
-         print "Elapsed time, Matrix FT:  %.1f s" % (t1_mft-t0_mft)
+         print("Elapsed time, FFT:  %.1f s" % (t1_fft-t0_fft))
+         print("Elapsed time, Matrix FT:  %.1f s" % (t1_mft-t0_mft))
 
          Elapsed time, FFT:  142.0 s
          Elapsed time, Matrix FT:  3.0 s
@@ -165,7 +166,7 @@ Compare the elapsed time::
 Band-limited coronagraph
 -------------------------
 
-Depending on the specific implementation, a Lyot coronagraph with a band-limited occulter can also benefit from the semi-analytical method in Poppy. For additional band-limited coronagraph examples, see the JWST NIRCam coronagraph modes included in `WebbPSF <http://github.com/mperrin/webbpsf>`_.
+Depending on the specific implementation, a Lyot coronagraph with a band-limited occulter can also benefit from the semi-analytical method in Poppy. For additional band-limited coronagraph examples, see the JWST NIRCam coronagraph modes included in `WebbPSF <http://github.com/spacetelescope/webbpsf>`_.
 
 As an example of a more complicated coronagraph PSF calculation than the ones above, here's a NIRCam-style band limited coronagraph with the source not precisely centered::
 

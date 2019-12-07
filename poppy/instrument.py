@@ -1,4 +1,3 @@
-from __future__ import (absolute_import, division, print_function, unicode_literals)
 import getpass
 import os
 import platform
@@ -10,7 +9,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import scipy.interpolate
 import scipy.ndimage
-import six
 import warnings
 
 try:
@@ -24,6 +22,7 @@ except ImportError:
 from . import poppy_core
 from . import optics
 from . import utils
+from . import conf
 
 import logging
 
@@ -203,7 +202,7 @@ class Instrument(object):
         """
         local_options = self.options  # all local state should be stored in a dict, for
         # ease of handing off to the various subroutines of
-        # calcPSF. Don't just modify the global self.options
+        # calc_psf. Don't just modify the global self.options
         # structure since that would pollute it with temporary
         # state as well as persistent state.
         local_options['monochromatic'] = monochromatic
@@ -248,7 +247,7 @@ class Instrument(object):
 
         # ----- compute weights for each wavelength based on source spectrum
         wavelens, weights = self._get_weights(source=source, nlambda=local_options['nlambda'],
-                                             monochromatic=local_options['monochromatic'])
+                                              monochromatic=local_options['monochromatic'])
 
         # Validate that the calculation we're about to do makes sense with this instrument config
         self._validate_config(wavelengths=wavelens)
@@ -273,7 +272,7 @@ class Instrument(object):
             result, intermediates = result
 
         self._apply_jitter(result,
-                          local_options)  # will immediately return if there is no jitter parameter in local_options
+                           local_options)  # will immediately return if there is no jitter parameter in local_options
 
         self._get_fits_header(result, local_options)
 
@@ -312,8 +311,6 @@ class Instrument(object):
         """
 
         nwavelengths = len(wavelengths)
-        if nwavelengths > 100:
-            raise ValueError("Maximum number of wavelengths exceeded. Cannot be more than 100.")
 
         # Set up cube and initialize structure based on PSF at first wavelength
         poppy_core._log.info("Starting multiwavelength data cube calculation.")
@@ -354,6 +351,7 @@ class Instrument(object):
         Modifies the 'result' HDUList object.
 
         """
+
         output_mode = options.get('output_mode', 'Both as FITS extensions')
         detector_oversample = options.get('detector_oversample', 1)
 
@@ -362,39 +360,52 @@ class Instrument(object):
             # the primary HDU. Nothing special needs to be done.
             poppy_core._log.info(" Returning only the oversampled data. Oversampled by {}".format(detector_oversample))
             return
+
         elif (output_mode == 'Detector sampled image') or ('detector' in output_mode.lower()):
             # output only the detector sampled image as primary HDU.
             # need to downsample it and replace the existing primary HDU
             if options['detector_oversample'] > 1:
                 poppy_core._log.info(" Downsampling to detector pixel scale, by {}".format(detector_oversample))
-                result[0].data = utils.rebin_array(result[0].data,
-                                                   rc=(detector_oversample, detector_oversample))
+                for ext in range(len(result)):
+                    result[ext].data = utils.rebin_array(result[ext].data,
+                                                         rc=(detector_oversample, detector_oversample))
             else:
                 poppy_core._log.info(" Result already at detector pixel scale; no downsampling needed.")
-            result[0].header['OVERSAMP'] = (1, 'These data are rebinned to detector pixels')
-            result[0].header['CALCSAMP'] = (detector_oversample, 'This much oversampling used in calculation')
-            result[0].header['EXTNAME'] = ('DET_SAMP')
-            result[0].header['PIXELSCL'] *= detector_oversample
+
+            for ext in np.arange(len(result)):
+                result[ext].header['OVERSAMP'] = (1, 'These data are rebinned to detector pixels')
+                result[ext].header['CALCSAMP'] = (detector_oversample, 'This much oversampling used in calculation')
+                result[ext].header['PIXELSCL'] *= detector_oversample
+                result[ext].header['EXTNAME'] = result[ext].header['EXTNAME'].replace("OVER", "DET_")
             return
+
         elif (output_mode == 'Both as FITS extensions') or ('both' in output_mode.lower()):
             # return the downsampled image in the first image extension
             # keep the oversampled image in the primary HDU.
             # create the image extension even if we're already at 1x sampling, for consistency
             poppy_core._log.info(" Adding extension with image downsampled to detector pixel scale.")
-            rebinned_result = result[0].copy()
-            if options['detector_oversample'] > 1:
-                poppy_core._log.info(" Downsampling to detector pixel scale, by {}".format(detector_oversample))
-                rebinned_result.data = utils.rebin_array(rebinned_result.data,
-                                                         rc=(detector_oversample, detector_oversample))
-            rebinned_result.header['OVERSAMP'] = (1, 'These data are rebinned to detector pixels')
-            rebinned_result.header['CALCSAMP'] = (detector_oversample, 'This much oversampling used in calculation')
-            rebinned_result.header['EXTNAME'] = 'DET_SAMP'
-            rebinned_result.header['PIXELSCL'] *= detector_oversample
-            result.append(rebinned_result)
-            return
 
-    calcPSF = calc_psf  # back compatibility alias
-    _calcPSF_format_output = _calc_psf_format_output
+            hdu = fits.HDUList()  # append to new hdulist object to preserve the order
+            for ext in np.arange(len(result)):
+                rebinned_result = result[ext].copy()
+                if options['detector_oversample'] > 1:
+                    poppy_core._log.info(" Downsampling to detector pixel scale, by {}".format(detector_oversample))
+                    rebinned_result.data = utils.rebin_array(rebinned_result.data,
+                                                             rc=(detector_oversample, detector_oversample))
+
+                rebinned_result.header['OVERSAMP'] = (1, 'These data are rebinned to detector pixels')
+                rebinned_result.header['CALCSAMP'] = (detector_oversample, 'This much oversampling used in calculation')
+                rebinned_result.header['PIXELSCL'] *= detector_oversample
+                rebinned_result.header['EXTNAME'] = rebinned_result.header['EXTNAME'].replace("OVER", "DET_")
+
+                hdu.append(result[ext])
+                hdu.append(rebinned_result)
+
+            # Create enough new extensions to append all psfs to them
+            [result.append(fits.ImageHDU()) for i in np.arange(len(hdu) - len(result))]
+            for ext in np.arange(len(hdu)): result[ext] = hdu[ext]
+
+            return
 
     def _get_fits_header(self, result, options):
         """ Set instrument-specific FITS header keywords
@@ -414,7 +425,7 @@ class Instrument(object):
             __version__ = ''
 
         # ---  update FITS header, display, and output.
-        if isinstance(self.pupil, six.string_types):
+        if isinstance(self.pupil, str):
             pupilstr = os.path.basename(self.pupil)
         elif isinstance(self.pupil, fits.HDUList):
             pupilstr = 'pupil from supplied FITS HDUList object'
@@ -424,19 +435,34 @@ class Instrument(object):
 
         if self.pupilopd is None:
             opdstring = "NONE - perfect telescope! "
-        elif isinstance(self.pupilopd, six.string_types):
+            opdfile = 'None'
+            opdslice = 0
+        elif isinstance(self.pupilopd, str):
             opdstring = os.path.basename(self.pupilopd)
+            opdfile = os.path.basename(self.pupilopd)
+            opdslice = 0  # default slice
         elif isinstance(self.pupilopd, fits.HDUList):
             opdstring = 'OPD from supplied FITS HDUlist object'
+            if isinstance(self.pupilopd.filename(), str):
+                opdfile = os.path.basename(self.pupilopd.filename())
+            else:
+                opdfile = 'None'
+            opdslice = 0
         elif isinstance(self.pupilopd, poppy_core.OpticalElement):
             opdstring = 'OPD from supplied OpticalElement: ' + str(self.pupilopd)
+            opdfile = str(self.pupilopd)
+            opdslice = 0
         else:  # tuple?
             opdstring = "%s slice %d" % (os.path.basename(self.pupilopd[0]), self.pupilopd[1])
+            opdfile = os.path.basename(self.pupilopd[0])
+            opdslice = self.pupilopd[1]
         result[0].header['PUPILOPD'] = (opdstring, 'Pupil OPD source')
+        result[0].header['OPD_FILE'] = (opdfile, 'Pupil OPD file name')
+        result[0].header['OPDSLICE'] = (opdslice, 'Pupil OPD slice number, if file is a datacube')
 
         result[0].header['INSTRUME'] = (self.name, 'Instrument')
         result[0].header['FILTER'] = (self.filter, 'Filter name')
-        result[0].header['EXTNAME'] = ('OVERSAMP')
+        result[0].header['EXTNAME'] = ('OVERSAMP', 'This extension is oversampled.')
         result[0].header.add_history('Created by POPPY version ' + __version__)
 
         if 'fft_oversample' in options:
@@ -545,7 +571,7 @@ class Instrument(object):
             full_opd_path = self.pupilopd if os.path.exists(self.pupilopd) else os.path.join(self._datapath, "OPD",
                                                                                              self.pupilopd)
         elif hasattr(self.pupilopd, '__getitem__') and isinstance(self.pupilopd[0],
-                                                                  six.string_types):  # tuple with filename and slice
+                                                                  str):  # tuple with filename and slice
             full_opd_path = (
                 self.pupilopd[0] if os.path.exists(self.pupilopd[0]) else os.path.join(self._datapath, "OPD",
                                                                                        self.pupilopd[0]),
@@ -558,13 +584,13 @@ class Instrument(object):
             raise TypeError("Not sure what to do with a pupilopd of that type:" + str(type(self.pupilopd)))
 
         # ---- apply pupil intensity and OPD to the optical model
-        optsys.addPupil(name='Entrance Pupil', optic=pupil_optic, transmission=full_pupil_path, opd=full_opd_path,
+        optsys.add_pupil(name='Entrance Pupil', optic=pupil_optic, transmission=full_pupil_path, opd=full_opd_path,
                         rotation=self._rotation)
 
         # Allow instrument subclass to add field-dependent aberrations
         aberration_optic = self._get_aberrations()
         if aberration_optic is not None:
-            optsys.addPupil(aberration_optic)
+            optsys.add_pupil(aberration_optic)
 
         # --- add the detector element.
         if fov_pixels is None:
@@ -575,13 +601,17 @@ class Instrument(object):
                 if self.options['parity'].lower() == 'even' and np.remainder(fov_pixels, 2) == 1:
                     fov_pixels += 1
 
-        optsys.addDetector(self.pixelscale, fov_pixels=fov_pixels, oversample=detector_oversample,
+        optsys.add_detector(self.pixelscale, fov_pixels=fov_pixels, oversample=detector_oversample,
                            name=self.name + " detector")
 
         return optsys
 
-    def _getOpticalSystem(self, *args, **kwargs):
-        warnings.warn("_getOpticalSystem is deprecated; use _get_optical_system instead", DeprecationWarning)
+    def get_optical_system(self, *args, **kwargs):
+        """ Return an OpticalSystem instance corresponding to the instrument as currently configured.
+
+        """
+        # Note, this has historically been an internal private API function (starting with an underscore)
+        # As of version 0.9 it is promoted to a public part of the API for the Instrument class and subclasses.
         return self._get_optical_system(*args, **kwargs)
 
     def _check_for_aliasing(self, wavelengths):
@@ -623,9 +653,9 @@ class Instrument(object):
             if (critical_angle_arcsec < det_fov_arcsec[0] / 2) or (critical_angle_arcsec < det_fov_arcsec[1] / 2):
                 import warnings
                 warnings.warn((
-                            "For wavelength {:.3f} microns, a FOV of {:.3f} * {:.3f} arcsec exceeds the maximum "+
-                            " spatial frequency well sampled by the input pupil. Your computed PSF will suffer from "+
-                            "aliasing for angles beyond {:.3f} arcsec radius.").format(
+                        "For wavelength {:.3f} microns, a FOV of {:.3f} * {:.3f} arcsec exceeds the maximum " +
+                        " spatial frequency well sampled by the input pupil. Your computed PSF will suffer from " +
+                        "aliasing for angles beyond {:.3f} arcsec radius.").format(
                     wl * 1e6, det_fov_arcsec[0], det_fov_arcsec[1], critical_angle_arcsec))
 
     def _get_aberrations(self):
@@ -663,7 +693,10 @@ class Instrument(object):
         if local_options is None:
             local_options = self.options
         if 'jitter' not in local_options:
+            result[0].header['JITRTYPE'] = ('None', 'Type of jitter applied')
             return
+
+        if conf.enable_speed_tests: t0 = time.time()
 
         poppy_core._log.info("Calculating jitter using " + str(local_options['jitter']))
 
@@ -674,7 +707,7 @@ class Instrument(object):
 
             sigma = local_options.get('jitter_sigma')
             if sigma is None:
-                poppy_core._log.warn(
+                poppy_core._log.warning(
                     "Gaussian jitter model requested, but no width for jitter distribution specified. " +
                     "Assuming jitter_sigma = 0.007 arcsec by default")
                 sigma = 0.007
@@ -689,12 +722,17 @@ class Instrument(object):
 
             poppy_core._log.info("        resulting image peak drops to {0:.3f} of its previous value".format(strehl))
             result[0].header['JITRTYPE'] = ('Gaussian convolution', 'Type of jitter applied')
-            result[0].header['JITRSIGM'] = (sigma, 'Gaussian sigma for jitter [arcsec]')
+            result[0].header['JITRSIGM'] = (sigma, 'Gaussian sigma for jitter, per axis [arcsec]')
             result[0].header['JITRSTRL'] = (strehl, 'Strehl reduction from jitter ')
 
             result[0].data = out
         else:
             raise ValueError('Unknown jitter option value: ' + local_options['jitter'])
+
+        if conf.enable_speed_tests:
+            t1 = time.time()
+            _log.debug("\tTIME %f s\t for jitter model" % (t1 - t0))
+
 
     #####################################################
     # Display routines
@@ -710,7 +748,7 @@ class Instrument(object):
             old_no_sam = None
         # Trigger config validation to update any optical planes
         # (specifically auto-selected pupils based on filter selection)
-        wavelengths, _ = self._get_weights()
+        wavelengths, _ = self._get_weights(nlambda=1)
         self._validate_config(wavelengths=wavelengths)
         optsys = self._get_optical_system()
         optsys.display(what='both')
@@ -725,7 +763,7 @@ class Instrument(object):
         """ return key for the cache of precomputed spectral weightings.
         This is a separate function so the TFI subclass can override it.
         """
-        return (self.filter, source.name, nlambda)
+        return self.filter, source.name, nlambda
 
     def _get_synphot_bandpass(self, filtername):
         """ Return a pysynphot.ObsBandpass object for the given desired band.
@@ -747,7 +785,7 @@ class Instrument(object):
 
         if filtername.lower().startswith('f'):
             # attempt to treat it as an HST filter name?
-            bpname = ('wfc3,uvis1,%s' % (filtername)).lower()
+            bpname = ('wfc3,uvis1,{}'.format(filtername)).lower()
         else:
             bpname = self._synphot_bandpasses[filtername]
 
@@ -870,10 +908,10 @@ class Instrument(object):
             self._spectra_cache[self._get_spec_cache_key(source, nlambda)] = newsource
             return newsource
         elif isinstance(source, dict) and ('wavelengths' in source) and ('weights' in source):
-            # Allow providing directly a set of specific weights and wavelengths, as in poppy.calcPSF source option #2
-            return (source['wavelengths'], source['weights'])
+            # Allow providing directly a set of specific weights and wavelengths, as in poppy.calc_psf source option #2
+            return source['wavelengths'], source['weights']
         elif isinstance(source, tuple) and len(source) == 2:
-            # Allow user to provide directly a tuple, as in poppy.calcPSF source option #3
+            # Allow user to provide directly a tuple, as in poppy.calc_psf source option #3
             return source
 
         else:  # Fallback simple code for if we don't have pysynphot.
@@ -899,19 +937,19 @@ class Instrument(object):
                         "when Pysynphot is not installed.".format(filterfile, waveunit))
             else:
                 waveunit = 'Angstrom'
-                poppy_core._log.warn(
+                poppy_core._log.warning(
                     "CAUTION: no WAVEUNIT keyword found in filter file {0}. Assuming = {1} by default".format(
-                        filterfile,waveunit))
+                        filterfile, waveunit))
 
-            poppy_core._log.warn(
+            poppy_core._log.warning(
                 "CAUTION: Just interpolating rather than integrating filter profile, over {0} steps".format(nlambda))
             wtrans = np.where(throughputs > 0.4)
             lrange = wavelengths[wtrans] * 1e-10  # convert from Angstroms to Meters
             # get evenly spaced points within the range of allowed lambdas, centered on each bin
             lambd = np.linspace(np.min(lrange), np.max(lrange), nlambda, endpoint=False) + (
-                        np.max(lrange) - np.min(lrange)) / (2 * nlambda)
+                    np.max(lrange) - np.min(lrange)) / (2 * nlambda)
             filter_fn = scipy.interpolate.interp1d(wavelengths * 1e-10, throughputs, kind='cubic',
                                                    bounds_error=False)
             weights = filter_fn(lambd)
+            filterfits.close()
             return lambd, weights
-

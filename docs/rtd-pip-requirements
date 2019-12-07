@@ -1,5 +1,9 @@
-numpy
+stsci_rtd_theme
+numpy >= 1.13
 matplotlib
 Cython
 astropy-helpers
 astropy
+sphinx-astropy
+sphinx_issues
+nbsphinx

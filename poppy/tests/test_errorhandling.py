@@ -6,10 +6,6 @@ from .. import optics
 from .. import matrixDFT
 from .. import zernike
 import sys
-if sys.version_info.major < 3:
-    _PYTHON_2 = True
-else:
-    _PYTHON_2 = False
 
 try:
     import pytest
@@ -18,10 +14,7 @@ except:
     _HAVE_PYTEST = False
 
 def _exception_message_starts_with(excinfo, message_body):
-    if _PYTHON_2:
-        return excinfo.value.message.startswith(message_body)
-    else:
-        return excinfo.value.args[0].startswith(message_body)
+    return excinfo.value.args[0].startswith(message_body)
 
 if _HAVE_PYTEST:
     def test_calc_psf_catch_invalid_wavelength():
@@ -29,8 +22,8 @@ if _HAVE_PYTEST:
 
         osys = poppy_core.OpticalSystem("test")
         pupil = optics.CircularAperture(radius=1)
-        osys.addPupil(pupil) #function='Circle', radius=1)
-        osys.addDetector(pixelscale=0.1, fov_arcsec=5.0) # use a large FOV so we grab essentially all the light and conserve flu
+        osys.add_pupil(pupil) #function='Circle', radius=1)
+        osys.add_detector(pixelscale=0.1, fov_arcsec=5.0) # use a large FOV so we grab essentially all the light and conserve flu
 
         with pytest.raises(ValueError) as excinfo:
             psf = osys.calc_psf('cat')
@@ -108,3 +101,61 @@ if _HAVE_PYTEST:
             zernike.zernike(2,4)
         assert _exception_message_starts_with(excinfo, "Zernike index m must be >= index n")
 
+
+    def test_lack_of_input_wavefront_specification():
+        with pytest.raises(RuntimeError) as excinfo:
+            poppy_core.OpticalSystem().calc_psf()
+        assert _exception_message_starts_with(excinfo, "You must define an entrance pupil diameter")
+
+
+    def test_compound_osys_errors():
+
+        """ Test that it rejects incompatible inputs"""
+        import poppy
+
+        inputs_and_errors = ( (None, "Missing required optsyslist argument"),
+                              ([], "The provided optsyslist argument is an empty list"),
+                              ([poppy.CircularAperture()], "All items in the optical system list must be OpticalSystem instances"))
+
+        for test_input, expected_error in inputs_and_errors:
+            with pytest.raises(ValueError) as excinfo:
+                poppy.CompoundOpticalSystem(test_input)
+            assert _exception_message_starts_with(excinfo, expected_error)
+
+
+        osys = poppy.OpticalSystem()
+        osys.add_pupil(poppy.CircularAperture())
+
+        cosys = poppy.CompoundOpticalSystem([osys])
+
+        with pytest.raises(RuntimeError) as excinfo:
+            cosys.add_pupil(poppy.SquareAperture())
+        assert _exception_message_starts_with(excinfo, "Adding individual optical elements is disallowed")
+
+    def test_add_incompatible_wavefronts():
+        """ Test we can't add wavefronts to incompatible things. Verifies fix of #308 """
+        import poppy
+        import astropy.units as u
+        n = 10
+        w1 = poppy.Wavefront(npix=n)
+        w2 = poppy.Wavefront(npix=n)
+        w3 = poppy.Wavefront(npix=n, diam=1*u.m)
+        w4 = poppy.Wavefront(npix=n, pixelscale=1*u.arcsec/u.pixel)
+        w5 = poppy.Wavefront(npix=n*2)
+
+        fw1 = poppy.FresnelWavefront(1.0*u.m, npix=n, oversample=1)
+
+        # test a valid addition works:
+        output = w1+w2
+        assert isinstance(output, w1.__class__), "couldn't add compatible wavefronts"
+
+        # test the invalid additions are caught:
+        inputs_and_errors = ((3, "Wavefronts can only be summed with other Wavefronts"),
+                             (fw1, "Wavefronts can only be summed with other Wavefronts of the same class"),
+                             (w3, "Wavefronts can only be added if they have the same pixelscale"),
+                             (w4, "Wavefronts can only be added if they have equivalent units"),
+                             (w5, "Wavefronts can only be added if they have the same size and shape"))
+        for test_input, expected_error in inputs_and_errors:
+            with pytest.raises(ValueError) as excinfo:
+                output = w1+test_input
+            assert _exception_message_starts_with(excinfo, expected_error)

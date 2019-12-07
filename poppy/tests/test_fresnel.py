@@ -8,8 +8,6 @@ from poppy.poppy_core import _log, PlaneType
 import astropy.units as u
 import matplotlib.pyplot as plt
 import numpy as np
-import astropy.units as u
-import numpy as np
 from .. import fwcentroid
 from scipy.ndimage import zoom,shift
 
@@ -132,7 +130,7 @@ def test_Circular_Aperture_PTP_long(display=False, npix=512, display_proper=Fals
     # and obviously the case based on the x axis of the figure.
 
     gw = fresnel.FresnelWavefront(beam_radius=0.5*u.m,wavelength=2200e-9,npix=npix,oversample=4)
-    gw *= optics.CircularAperture(radius=0.5,oversample=gw.oversample)
+    gw *= optics.CircularAperture(radius=0.5,oversample=gw.oversample, gray_pixel=False)
 
     gw.propagate_fresnel(z)
     inten = gw.intensity
@@ -365,7 +363,7 @@ def test_fresnel_optical_system_Hubble(display=False, sampling=2):
         utils.display_psf(psf, imagecrop=1)
 
 
-def test_fresnel_FITS_Optical_element(tmpdir, display=False):
+def test_fresnel_FITS_Optical_element(tmpdir, display=False, verbose=False):
     """ Test that Fresnel works with FITS optical elements.
 
     Incidentally serves as a test of the fix for the FITS endian issue
@@ -381,38 +379,73 @@ def test_fresnel_FITS_Optical_element(tmpdir, display=False):
     tmpdir : string
         temporary directory for output FITS file. To be provided by py.test's
         tmpdir test fixture.
+    display : bool
+        Show plots?
+    verbose : bool
+        Print some remarks when running?
 
     """
     import os.path
     import astropy.io.fits as fits
-    from .. import wfe
+    from poppy import wfe
 
-    m1_zernike= wfe.ZernikeWFE(radius=1.2,
-        coefficients=[0,0,0,0,0,1e-7],
-        oversample=0)
+    # parameters for calculation test case:
+    radius = 1.0 * u.m
+    npix = 128
 
-    fits_zern = m1_zernike.to_fits(what='opd')
+    conv_lens = fresnel.QuadraticLens(1.0 * u.m)
+    circular_aperture = optics.CircularAperture(radius=radius, gray_pixel=False)
 
-    filename=os.path.join(str(tmpdir), "astigmatism.fits")
-    fits_zern.writeto(filename, overwrite=True)
-    astig_surf = poppy_core.FITSOpticalElement(opd=filename,
-        planetype=poppy_core._INTERMED,
-        oversample=1)
+    # To test two different versions of the FITS handling, we will repeat this test twice:
+    # once with the FITS element crafted to precisely match the pixel scale of the
+    # wavefront in the Fresnel propagation, and once with a mismatch in the pixel scale
+    # so that it has to be interpolated. We should get the same result both ways within the
+    # tolerances.
 
-    osys = poppy_core.OpticalSystem()
-    circular_aperture = optics.CircularAperture(radius=1.2)
-    osys.addPupil(circular_aperture)
-    osys.addPupil(astig_surf)
-    osys.addDetector(pixelscale=.01, fov_arcsec=5)
+    # Below we will create a FITSOpticalElement and show that it works in the FresnelOpticalSystem.
+    # To make the test interesting we put some astigmatism in that FITS file, but this is arbitrary.
+    # We make the OPD by creating a Zernike WFE object, sampling it as desired, writing it
+    # out as a temp file, then reading back in to a FITSOpticalElement
 
-    psf_with_astigmatism, wfronts = osys.calc_psf( display_intermediates=display,return_intermediates=True)
+    for matchscale in [True, False]:
 
-    cx, cy = utils.measure_centroid(psf_with_astigmatism)
-    expected_cx, expected_cy = 499.5, 499.5
-    assert np.abs(cx-expected_cx)< 0.02, "PSF centroid is not as expected in X"
-    assert np.abs(cy-expected_cy)< 0.02, "PSF centroid is not as expected in Y"
-    assert psf_with_astigmatism[0].data.sum() > 0.99, "PSF total flux is not as expected."
-    assert np.abs(psf_with_astigmatism[0].data.max() - 0.00178667) < 1e-5, "PSF peak pixel is not as expected"
+        # Create the FITS element to test
+        m1_zernike = wfe.ZernikeWFE(radius=radius,
+                                    coefficients=[0, 0, 0, 0, 0, 1e-7])
+        if matchscale:
+            fits_zern = m1_zernike.to_fits(what='opd', grid_size=2 * radius, npix=npix)
+        else:
+            fits_zern = m1_zernike.to_fits(what='opd', npix=376)
+
+        filename = os.path.join(str(tmpdir), "astigmatism.fits")
+        fits_zern.writeto(filename, overwrite=True)
+        astig_surf = poppy_core.FITSOpticalElement(opd=filename,
+                                                   planetype=poppy_core._INTERMED,
+                                                   oversample=1)
+
+        if verbose:
+            print("Astigmatism surface from FITS has pixelscale {}, npix={}".format(astig_surf.pixelscale,
+                                                                                    astig_surf.shape[0]))
+
+        # Now we put that FITSOpticalElement into a Fresnel optical system.
+        fosys = fresnel.FresnelOpticalSystem(pupil_diameter=radius * 2, beam_ratio=0.25, npix=npix)
+        fosys.add_optic(circular_aperture)
+        fosys.add_optic(astig_surf)
+        fosys.add_optic(conv_lens)
+        fosys.add_optic(optics.ScalarTransmission(name='focus'), distance=1 * u.m)
+
+        # perform the calculation, then check results are as expected
+        psf_with_astigmatism, wfronts = fosys.calc_psf(display_intermediates=display, return_intermediates=True)
+
+        cx, cy = utils.measure_centroid(psf_with_astigmatism)
+        expected_cx = expected_cy = psf_with_astigmatism[0].data.shape[0] // 2
+        assert np.abs(cx - expected_cx) < 0.02, "PSF centroid is not as expected in X"
+        assert np.abs(cy - expected_cy) < 0.02, "PSF centroid is not as expected in Y"
+        assert psf_with_astigmatism[0].data.sum() > 0.99, "PSF total flux is not as expected."
+        assert np.abs(psf_with_astigmatism[0].data.max() - 0.033212) < 2e-5, "PSF peak pixel is not as expected"
+
+        if verbose:
+            print("Tests of FITSOpticalElement in FresnelOpticalSystem pass.")
 
 
 def test_fresnel_propagate_direct_forward_and_back():
@@ -471,7 +504,193 @@ def test_fresnel_return_complex():
     tel.add_optic(optics.CircularAperture(radius=M1_radius,name="M1 aperture"))
     tel.add_optic(optics.ScalarTransmission( name="primary mirror focal plane"), distance=fl_M1)
 
-    psf=tel.calcPSF(return_final=True)
+    psf=tel.calc_psf(return_final=True)
 
     assert len(psf[1])==1
     assert np.allclose(psf[1][0].intensity,psf[0][0].data)
+
+
+def test_detector_in_fresnel_system(npix=256):
+    """ Show that we can put a detector in a FresnelOpticalSystem
+    and it will resample the wavefront to the desired sampling and size"""
+
+    output_npix = 400
+    out_pixscale = 210
+
+    # Setup Fresnel system, with a detector that changes the sampling
+    # note - ensure pupil array diameter is at least a bit larger than the actual aperture
+    osys = fresnel.FresnelOpticalSystem(pupil_diameter=0.051*u.m, npix=npix, beam_ratio=0.25)
+    osys.add_optic(optics.CircularAperture(radius=0.025))
+    osys.add_optic(optics.ScalarTransmission(), distance=10*u.m)
+    osys.add_detector(pixelscale=out_pixscale*u.micron/u.pixel, fov_pixels=output_npix)
+
+    # Calculate a PSF
+    psf, waves = osys.calc_psf(wavelength=1e-6, return_intermediates=True)
+
+    # Check the output pixel scale is as desired
+    np.testing.assert_almost_equal(psf[0].header['PIXELSCL'],  out_pixscale/1e6)
+
+    # Check the wavefront gets cropped to the right size of pixels, from something different
+    assert waves[0].shape == (1024, 1024)
+    assert waves[1].shape == (1024, 1024)
+    assert waves[2].shape == (output_npix, output_npix)
+    assert psf[0].data.shape == (output_npix, output_npix)
+
+    assert psf[0].header['NAXIS1'] == output_npix
+
+    # Check the PSF is centered and not offset
+    psfdata = psf[0].data
+    ny, nx = psfdata.shape
+    assert psfdata[ny//2, nx//2] == psfdata.max(), "Peak (spot of Arago) is not in the center"
+    assert np.allclose(psfdata[output_npix//2],
+                       np.roll(psfdata[output_npix//2][::-1], 1), atol=3e-8), "PSF is unexpectedly asymmetric"
+    y, x = np.indices(psfdata.shape)
+    x -= nx//2
+    y -= ny//2
+    assert (psf[0].data*x).sum() / \
+        psf[0].data.sum() < 0.001, "PSF is surprisingly offset from centered in X"
+    assert (psf[0].data*y).sum() / \
+        psf[0].data.sum() < 0.001, "PSF is surprisingly offset from centered in Y"
+
+    # Check flux conservation
+    # Note this test relies on the detector covering a sufficiently large area of the PSF that the
+    # encircled energy is nearly total
+    assert np.abs(waves[2].total_intensity -
+                  1) < 0.001, "PSF total flux is surprisingly different from 1"
+
+def test_wavefront_conversions():
+    """ Test conversions between Wavefront and FresnelWavefront
+    in both directions.
+    """
+    import poppy
+
+    props = lambda wf: (wf.shape, wf.ispadded, wf.oversample, wf.pixelscale)
+
+    optic = poppy.CircularAperture()
+    w = poppy.Wavefront(diam=4*u.m)
+    w*= optic
+
+    fw = poppy.FresnelWavefront(beam_radius=2*u.m)
+    fw*= optic
+
+    # test convert from Fraunhofer to Fresnel
+    fw2 = poppy.FresnelWavefront.from_wavefront(w)
+    assert props(fw)==props(fw2)
+    #np.testing.assert_allclose(fw.wavefront, fw2.wavefront)
+
+    # test convert from Fresnel to Fraunhofer
+    w2 = poppy.Wavefront.from_fresnel_wavefront(fw)
+    assert props(w)==props(w2)
+
+
+def test_CompoundOpticalSystem_fresnel(npix=128, display=False):
+    """ Test that the CompoundOpticalSystem container works for Fresnel systems
+
+    Parameters
+    ----------
+    npix : int
+        Number of pixels for the pupil sampling. Kept small by default to
+        reduce test run time.
+    """
+
+    import poppy
+
+    opt1 = poppy.SquareAperture()
+    opt2 = poppy.CircularAperture(radius=0.55)
+
+    # a single optical system
+    osys = poppy.FresnelOpticalSystem(beam_ratio=0.25, npix=npix)
+    osys.add_optic(opt1)
+    osys.add_optic(opt2, distance=10*u.cm)
+    osys.add_optic(poppy.QuadraticLens(1.0*u.m))
+    osys.add_optic(poppy.Detector(pixelscale=0.25*u.micron/u.pixel, fov_pixels=512), distance=1*u.m)
+
+    psf = osys.calc_psf(display_intermediates=display)
+
+    if display:
+        plt.figure()
+
+    # a Compound Fresnel optical system
+    osys1 = poppy.FresnelOpticalSystem(beam_ratio=0.25, npix=npix)
+    osys1.add_optic(opt1)
+    osys2 = poppy.FresnelOpticalSystem(beam_ratio=0.25)
+    osys2.add_optic(opt2, distance=10*u.cm)
+    osys2.add_optic(poppy.QuadraticLens(1.0*u.m))
+    osys2.add_optic(poppy.Detector(pixelscale=0.25*u.micron/u.pixel, fov_pixels=512), distance=1*u.m)
+
+    cosys = poppy.CompoundOpticalSystem([osys1, osys2])
+
+    psf2 = cosys.calc_psf(display_intermediates=display)
+
+    assert np.allclose(psf[0].data, psf2[0].data), "Results from simple and compound Fresnel systems differ unexpectedly."
+
+    return psf, psf2
+
+def test_CompoundOpticalSystem_hybrid(npix=128):
+    """ Test that the CompoundOpticalSystem container works for hybrid Fresnel+Fraunhofer systems
+
+    Defining "works correctly" here is a bit arbitrary given the different physical assumptions.
+    For the purpose of this test we consider a VERY simple case, mostly a Fresnel system. We split
+    out the first optic and put that in a Fraunhofer system. We then test that a compound hybrid
+    system yields the same results as the original fully-Fresnel system.
+
+    Parameters
+    ----------
+    npix : int
+        Number of pixels for the pupil sampling. Kept small by default to
+        reduce test run time.
+    """
+
+    import poppy
+
+    opt1 = poppy.SquareAperture()
+    opt2 = poppy.CircularAperture(radius=0.55)
+
+    ###### Simple test case to exercise the conversion functions, with only trivial propagation
+    osys1 = poppy.OpticalSystem()
+    osys1.add_pupil(opt1)
+    osys2 = poppy.FresnelOpticalSystem()
+    osys2.add_optic(poppy.ScalarTransmission())
+    osys3 = poppy.OpticalSystem()
+    osys3.add_pupil(poppy.ScalarTransmission())
+    osys3.add_detector(fov_pixels=64, pixelscale=0.01)
+    cosys = poppy.CompoundOpticalSystem([osys1, osys2, osys3])
+    psf, ints = cosys.calc_psf( return_intermediates=True)
+    assert len(ints) == 4, "Unexpected number of intermediate  wavefronts"
+    assert isinstance(ints[0], poppy.Wavefront), "Unexpected output type"
+    assert isinstance(ints[1], poppy.FresnelWavefront), "Unexpected output type"
+    assert isinstance(ints[2], poppy.Wavefront), "Unexpected output type"
+
+    ###### Harder case involving more complex actual propagations
+
+    #===== a single Fresnel optical system =====
+    osys = poppy.FresnelOpticalSystem(beam_ratio=0.25, npix=128, pupil_diameter=2*u.m)
+    osys.add_optic(opt1)
+    osys.add_optic(opt2, distance=10*u.cm)
+    osys.add_optic(poppy.QuadraticLens(1.0*u.m))
+    osys.add_optic(poppy.Detector(pixelscale=0.125*u.micron/u.pixel, fov_pixels=512), distance=1*u.m)
+
+    #===== two systems, joined into a CompoundOpticalSystem =====
+    # First part is Fraunhofer then second is Fresnel
+    osys1 = poppy.OpticalSystem(npix=128, oversample=4, name="FIRST PART, FRAUNHOFER")
+    # Note for strict consistency we need to apply a half pixel shift to optics in the Fraunhofer part;
+    # this accomodates the differences between different types of image centering.
+    pixscl = osys.input_wavefront().pixelscale
+    halfpixshift = (pixscl*0.5*u.pixel).to(u.m).value
+    opt1shifted = poppy.SquareAperture(shift_x = halfpixshift, shift_y = halfpixshift)
+    osys1.add_pupil(opt1shifted)
+
+    osys2 = poppy.FresnelOpticalSystem(name='SECOND PART, FRESNEL')
+    osys2.add_optic(opt2, distance=10*u.cm)
+    osys2.add_optic(poppy.QuadraticLens(1.0*u.m))
+    osys2.add_optic(poppy.Detector(pixelscale=0.125*u.micron/u.pixel, fov_pixels=512), distance=1*u.m)
+
+    cosys = poppy.CompoundOpticalSystem([osys1, osys2])
+
+    #===== PSF calculations =====
+    psf_simple = osys.calc_psf(return_intermediates=False)
+    poppy.poppy_core._log.info("******=========calculation divider============******")
+    psf_compound = cosys.calc_psf(return_intermediates=False)
+
+    np.testing.assert_allclose(psf_simple[0].data, psf_compound[0].data,
+                               err_msg="PSFs do not match between equivalent simple and compound/hybrid optical systems")
