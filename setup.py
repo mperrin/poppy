@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # Based on astropy affiliated package template's setup.py
-# Licensed under a 3-clause BSD style license - see LICENSE.rst
+# Licensed under a 3-clause BSD style license - see LICENSE.md
 from __future__ import print_function
 
 import glob
@@ -8,6 +8,15 @@ import os
 import sys
 import imp
 import ast
+
+
+__minimum_python_version__ = "3.5"
+
+# Enforce Python version check - this is the same check as in __init__.py but
+# this one has to happen before importing ah_bootstrap.
+if sys.version_info < tuple((int(val) for val in __minimum_python_version__.split('.'))):
+    sys.stderr.write("ERROR: poppy requires Python {} or later\n".format(__minimum_python_version__))
+    sys.exit(1)
 
 try:
     import numpy
@@ -44,7 +53,7 @@ conf.read(['setup.cfg'])
 metadata = dict(conf.items('metadata'))
 
 PACKAGENAME = metadata.get('package_name', 'packagename')
-DESCRIPTION = metadata.get('description', 'Astropy affiliated package')
+DESCRIPTION = metadata.get('description', 'unknown')
 AUTHOR = metadata.get('author', '')
 AUTHOR_EMAIL = metadata.get('author_email', '')
 LICENSE = metadata.get('license', 'unknown')
@@ -61,7 +70,7 @@ LONG_DESCRIPTION = ast.get_docstring(module_ast)
 builtins._ASTROPY_PACKAGE_NAME_ = PACKAGENAME
 
 # VERSION should be PEP386 compatible (http://www.python.org/dev/peps/pep-0386)
-VERSION = '0.6.2.dev'
+VERSION = '0.9.0'
 
 # Indicates if this version is a release version
 RELEASE = 'dev' not in VERSION
@@ -109,21 +118,18 @@ for root, dirs, files in os.walk(PACKAGENAME):
 package_info['package_data'][PACKAGENAME].extend(c_files)
 
 install_requires_packages = [
-      'six>=1.7.3',
-      'numpy>=1.10.0',
-      'scipy>=0.14.0',
-      'matplotlib>=1.3.0',
-      'astropy>=1.3',
+      'numpy>=1.13.0',
+      'scipy>=1.0.0',
+      'matplotlib>=2.0.0',
+      'astropy>=3.0.0',
 ]
 
-# Python 3.4.x backports
-if sys.version_info[:2] < (3, 4):
-    install_requires_packages.append('enum34>=1.0.4')
 
 setup(name=PACKAGENAME,
       version=VERSION,
       description=DESCRIPTION,
       scripts=scripts,
+      python_requires='>=' + __minimum_python_version__,
       install_requires=install_requires_packages,
       provides=[PACKAGENAME],
       author=AUTHOR,

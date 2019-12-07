@@ -1,5 +1,3 @@
-from __future__ import division
-
 """
 Zernike & Related Polynomials
 
@@ -8,45 +6,45 @@ measuring and modeling wavefronts:
 
     * the classical Zernike polynomials, which are orthonormal over the unit circle.
     * 'Hexikes', orthonormal over the unit hexagon
-    * 'jwexikes', a custom set orthonormal over a numerically supplied JWST pupil.
-        (or other generalized pupil)
+    * tools for creating a custom set orthonormal over a numerically supplied JWST pupil,
+        or other generalized pupil
+    * Segmented bases with piston, tip, & tilt of independent hexagonal segments.
 
 For definitions of Zernikes and a basic introduction to why they are a useful way to
+
 parametrize data, see e.g.
     Hardy's 'Adaptive Optics for Astronomical Telescopes' section 3.5.1
     or even just the Wikipedia page is pretty decent.
 
-For definition of the hexagon and JW pupil polynomials, a good reference to the
+For definition of the hexagon and arbitrary pupil polynomials, a good reference to the
+
 Gram-Schmidt orthonormalization process as applied to this case is
     Mahajan and Dai, 2006. Optics Letters Vol 31, 16, p 2462:
 """
 
-import os
+import inspect
 from math import factorial
 import numpy as np
-import matplotlib.pyplot as plt
-
-from astropy.io import fits
 
 import sys
-if sys.version_info > (3, 2):
-    from functools import lru_cache
-else:
-    from poppy.vendor.lru_cache import lru_cache
+import logging
+
+import astropy.units as u
 
 from poppy.poppy_core import Wavefront
 
-import logging
+from functools import lru_cache
 
 __all__ = [
     'R', 'cached_zernike1', 'hex_aperture', 'hexike_basis', 'noll_indices',
-    'opd_expand', 'str_zernike', 'zern_name', 'zernike', 'zernike1', 'zernike_basis'
+    'opd_expand', 'opd_expand_nonorthonormal', 'opd_expand_segments', 'opd_from_zernikes',
+    'str_zernike', 'zern_name', 'zernike', 'zernike1', 'zernike_basis',
+    'Segment_Piston_Basis','Segment_PTT_Basis', 'arbitrary_basis'
 ]
 
 _log = logging.getLogger(__name__)
 _log.setLevel(logging.INFO)
 _log.addHandler(logging.NullHandler())
-
 
 
 def _is_odd(integer):
@@ -177,7 +175,7 @@ def R(n, m, rho):
 
 
 def zernike(n, m, npix=100, rho=None, theta=None, outside=np.nan,
-            noll_normalize=True):
+            noll_normalize=True, **kwargs):
     """Return the Zernike polynomial Z[m,n] for a given pupil.
 
     For this function the desired Zernike is specified by 2 indices m and n.
@@ -185,12 +183,16 @@ def zernike(n, m, npix=100, rho=None, theta=None, outside=np.nan,
     ordered by a single index.
 
     You may specify the pupil in one of two ways:
-     zernike(n, m, npix)       where npix specifies a pupil diameter in pixels.
-                               The returned pupil will be a circular aperture
-                               with this diameter, embedded in a square array
-                               of size npix*npix.
-     zernike(n, m, rho=r, theta=theta)    Which explicitly provides the desired pupil coordinates
-                               as arrays r and theta. These need not be regular or contiguous.
+
+        zernike(n, m, npix)
+            where npix specifies a pupil diameter in pixels.
+            The returned pupil will be a circular aperture
+            with this diameter, embedded in a square array
+            of size npix*npix.
+
+        zernike(n, m, rho=r, theta=theta)
+            Which explicitly provides the desired pupil coordinates
+            as arrays r and theta. These need not be regular or contiguous.
 
     The expressions for the Zernike terms follow the normalization convention
     of Noll et al. JOSA 1976 unless the `noll_normalize` argument is False.
@@ -199,7 +201,7 @@ def zernike(n, m, npix=100, rho=None, theta=None, outside=np.nan,
     ----------
     n, m : int
         Zernike function degree
-    npix: int
+    npix : int
         Desired diameter for circular pupil. Only used if `rho` and
         `theta` are not provided.
     rho, theta : array_like
@@ -224,10 +226,9 @@ def zernike(n, m, npix=100, rho=None, theta=None, outside=np.nan,
     if not n >= m:
         raise ValueError("Zernike index m must be >= index n")
     if (n - m) % 2 != 0:
-        _log.warn("Radial polynomial is zero for these inputs: m={}, n={} "
+        _log.warning("Radial polynomial is zero for these inputs: m={}, n={} "
                   "(are you sure you wanted this Zernike?)".format(m, n))
     _log.debug("Zernike(n=%d, m=%d)" % (n, m))
-
 
     if theta is None and rho is None:
         x = (np.arange(npix, dtype=np.float64) - (npix - 1) / 2.) / ((npix - 1) / 2.)
@@ -238,9 +239,9 @@ def zernike(n, m, npix=100, rho=None, theta=None, outside=np.nan,
         theta = np.arctan2(yy, xx)
     elif (theta is None and rho is not None) or (theta is not None and rho is None):
         raise ValueError("If you provide either the `theta` or `rho` input array, you must "
-                             "provide both of them.")
+                         "provide both of them.")
 
-    if not np.all(rho.shape==theta.shape):
+    if not np.all(rho.shape == theta.shape):
         raise ValueError('The rho and theta arrays do not have consistent shape.')
 
     aperture = np.ones(rho.shape)
@@ -322,7 +323,7 @@ def zernike_basis(nterms=15, npix=512, rho=None, theta=None, **kwargs):
         Number of Zernike terms to return, starting from piston.
         (e.g. ``nterms=1`` would return only the Zernike piston term.)
         Default is 15.
-    npix: int
+    npix : int
         Desired pixel diameter for circular pupil. Only used if `rho`
         and `theta` are not provided.
     rho, theta : array_like
@@ -333,13 +334,13 @@ def zernike_basis(nterms=15, npix=512, rho=None, theta=None, **kwargs):
     Other parameters are passed through to `poppy.zernike.zernike`
     and are documented there.
     """
-    if rho is not None and  theta is not None:
+    if rho is not None and theta is not None:
         # both are required, but validated in zernike1
         shape = rho.shape
         use_polar = True
     elif (theta is None and rho is not None) or (theta is not None and rho is None):
         raise ValueError("If you provide either the `theta` or `rho` input array, you must "
-                             "provide both of them.")
+                         "provide both of them.")
 
     else:
         shape = (npix, npix)
@@ -367,7 +368,8 @@ def zernike_basis_faster(nterms=15, npix=512, outside=np.nan):
     at a cost of somewhat less flexibility.
 
     Does not support providing polar coordinates directly - use regular
-    zernike_basis for that.
+    zernike_basis for that. Does not support specifying the aperture
+    directly - similarly, use regular zernike_basis for that.
 
     Parameters
     -----------
@@ -382,7 +384,6 @@ def zernike_basis_faster(nterms=15, npix=512, outside=np.nan):
 
     """
     shape = (npix, npix)
-    use_polar = False
 
     zern_output = np.zeros((nterms,) + shape)
 
@@ -395,7 +396,7 @@ def zernike_basis_faster(nterms=15, npix=512, outside=np.nan):
 
     aperture = np.ones_like(rho)
     aperture[rho > 1] = 0.0  # this is the aperture mask
-    noll_normalize=True
+    noll_normalize = True
 
     @lru_cache()
     def cached_R(n, m):
@@ -423,8 +424,7 @@ def zernike_basis_faster(nterms=15, npix=512, outside=np.nan):
             return output
 
     for j in range(nterms):
-        n, m = noll_indices(j+1)
-
+        n, m = noll_indices(j + 1)
 
         if m == 0:
             if n == 0:
@@ -441,7 +441,6 @@ def zernike_basis_faster(nterms=15, npix=512, outside=np.nan):
 
         zernike_result[rho > 1] = outside
         zern_output[j] = zernike_result
-
 
     return zern_output
 
@@ -503,6 +502,7 @@ def hex_aperture(npix=1024, rho=None, theta=None, vertical=False, outside=0):
 
 
 def hexike_basis(nterms=15, npix=512, rho=None, theta=None,
+                 aperture=None,
                  vertical=False, outside=np.nan):
     """Return a list of hexike polynomials 1-N following the
     method of Mahajan and Dai 2006 for numerical orthonormalization
@@ -532,7 +532,14 @@ def hexike_basis(nterms=15, npix=512, rho=None, theta=None,
         Value for pixels outside the hexagonal aperture.
         Default is `np.nan`, but you may also find it useful for this to
         be 0.0 sometimes.
-    """
+    aperture : 2D numpy array, optional
+        Aperture mask for which pixels are included within the aperture.
+        All positive nonzero values are considered within the aperture;
+        any pixels with zero, negative, or NaN values will be considered
+        outside the aperture, and set equal to the 'outside' parameter value.
+        If this parameter is not set, the aperture will be inferred from
+        the provided rho and theta arrays.
+        """
 
     if rho is not None:
         shape = rho.shape
@@ -541,24 +548,28 @@ def hexike_basis(nterms=15, npix=512, rho=None, theta=None,
     else:
         shape = (npix, npix)
 
-    aperture = hex_aperture(npix=npix, rho=rho, theta=theta, vertical=vertical, outside=0)
-    A = aperture.sum()
+    if aperture is None:
+        aperture = hex_aperture(npix=npix, rho=rho, theta=theta, vertical=vertical, outside=0)
+
+    # any pixels with zero or NaN in the aperture are outside the area
+    apmask = (np.isfinite(aperture) & (aperture > 0))
+    apmask_float = np.asarray(apmask, float)
+    A = apmask.sum()
 
     # precompute zernikes
-    Z = np.full((nterms + 1,) + shape, outside,dtype=float)
+    Z = np.full((nterms + 1,) + shape, outside, dtype=float)
     Z[1:] = zernike_basis(nterms=nterms, npix=npix, rho=rho, theta=theta, outside=0.0)
 
-
     G = [np.zeros(shape), np.ones(shape)]  # array of G_i etc. intermediate fn
-    H = [np.zeros(shape), np.ones(shape) * aperture]  # array of hexikes
+    H = [np.zeros(shape), apmask_float.copy()]  # array of hexikes
     c = {}  # coefficients hash
 
     for j in np.arange(nterms - 1) + 1:  # can do one less since we already have the piston term
         _log.debug("  j = " + str(j))
         # Compute the j'th G, then H
-        nextG = Z[j + 1] * aperture
+        nextG = Z[j + 1] * apmask_float
         for k in np.arange(j) + 1:
-            c[(j + 1, k)] = -1 / A * (Z[j + 1] * H[k] * aperture).sum()
+            c[(j + 1, k)] = -1 / A * (Z[j + 1] * H[k] * apmask_float).sum()
             if c[(j + 1, k)] != 0:
                 nextG += c[(j + 1, k)] * H[k]
             _log.debug("    c[%s] = %f", str((j + 1, k)), c[(j + 1, k)])
@@ -568,17 +579,18 @@ def hexike_basis(nterms=15, npix=512, rho=None, theta=None,
         G.append(nextG)
         H.append(nextH)
 
-        #TODO - contemplate whether the above algorithm is numerically stable
+        # TODO - contemplate whether the above algorithm is numerically stable
         # cf. modified gram-schmidt algorithm discussion on wikipedia.
 
-    basis = np.asarray(H[1:]) # drop the 0th null element
-    basis[:,aperture < 1] = outside
+    basis = np.asarray(H[1:])  # drop the 0th null element
+    basis[:, ~apmask] = outside
     return basis
 
+
 def hexike_basis_wss(nterms=9, npix=512, rho=None, theta=None,
-                x=None,y=None,
-                 vertical=False, outside=np.nan,
-                 aperture=None):
+                     x=None, y=None,
+                     vertical=False, outside=np.nan,
+                     aperture=None):
     """Return a list of hexike polynomials 1-N based on analytic
     expressions. Note, this is strictly consistent with the
     JWST WSS hexikes in both ordering and normalization.
@@ -630,6 +642,13 @@ def hexike_basis_wss(nterms=9, npix=512, rho=None, theta=None,
         Value for pixels outside the hexagonal aperture.
         Default is `np.nan`, but you may also find it useful for this to
         be 0.0 sometimes.
+    aperture : 2D numpy array, optional
+        Aperture mask for which pixels are included within the aperture.
+        All positive nonzero values are considered within the aperture;
+        any pixels with zero, negative, or NaN values will be considered
+        outside the aperture, and set equal to the 'outside' parameter value.
+        If this parameter is not set, the aperture will be inferred from
+        the provided rho and theta arrays.
     """
 
     if rho is not None and theta is not None:
@@ -637,60 +656,66 @@ def hexike_basis_wss(nterms=9, npix=512, rho=None, theta=None,
         shape = rho.shape
         assert len(shape) == 2 and shape[0] == shape[1], \
             "only square rho and theta arrays supported"
-        x = rho*np.cos(theta)
-        y = rho*np.sin(theta)
-        r2 = rho**2
+        x = rho * np.cos(theta)
+        y = rho * np.sin(theta)
+        r2 = rho ** 2
     elif x is not None and y is not None:
         _log.debug("User supplied cartesian coords")
-        r2 = x**2+y**2
+        r2 = x ** 2 + y ** 2
         rho = np.sqrt(r2)
-        theta = np.arctan2(y,x)
+        theta = np.arctan2(y, x)
     else:
         _log.debug("User supplied only the number of pixels")
-        #create 2D arrays of coordinates between 0 and 1
+        # create 2D arrays of coordinates between 0 and 1
         shape = (npix, npix)
-        y,x = np.indices(shape, dtype=float)
-        y -= npix/2.
-        x -= npix/2.
-        y /= (npix/2)
-        x /= (npix/2)
+        y, x = np.indices(shape, dtype=float)
+        y -= npix / 2.
+        x -= npix / 2.
+        y /= (npix / 2)
+        x /= (npix / 2)
 
-        r2 = x**2+y**2
+        r2 = x ** 2 + y ** 2
         rho = np.sqrt(r2)
-        theta = np.arctan2(y,x)
-
+        theta = np.arctan2(y, x)
 
     if aperture is None:
         aperture = hex_aperture(npix=npix, rho=rho, theta=theta, vertical=vertical)
-    #print(rho[aperture==1].max())
 
-    A = aperture.sum()
+    # any pixels with zero or NaN in the aperture are outside the area
+    apmask = (np.isfinite(aperture) & (aperture > 0))
 
     # first 9 hexikes (those used in WAS for JWST)
     # create array of hexikes, plus pad for 0th term
-    H = [np.zeros_like(x),       # placeholder for 0th term to allow 1-indexing
-         np.ones_like(x),    # Piston
-         y,                 # tilt around x
-         x,                 # tilt around y
-         2*x*y,              # astig-45
-         r2-0.5,             # focus -- yes this is really exactly what the WAS uses
-         x**2-y**2,          # astig-00
-         ((25./11.)*r2-14./11.) * x,  # Coma x
-         ((25./11.)*r2-14./11.) * y,  # Coma y
-         ((860./231.)*r2**2 - (5140./1617.)*r2 + (67./147.)),  # Spherical
-         (10./7.)*(rho*r2) * np.sin(3.*theta),     # Trefoil-0
-         (10./7.)*(rho*r2) * np.cos(3.*theta),           # Trefoil-30
+    H = [np.zeros_like(x),  # placeholder for 0th term to allow 1-indexing
+         np.ones_like(x),  # Piston
+         y,  # tilt around x
+         x,  # tilt around y
+         2 * x * y,  # astig-45
+         r2 - 0.5,  # focus -- yes this is really exactly what the WAS uses
+         x ** 2 - y ** 2,  # astig-00
+         ((25. / 11.) * r2 - 14. / 11.) * x,  # Coma x
+         ((25. / 11.) * r2 - 14. / 11.) * y,  # Coma y
+         ((860. / 231.) * r2 ** 2 - (5140. / 1617.) * r2 + (67. / 147.)),  # Spherical
+         (10. / 7.) * (rho * r2) * np.sin(3. * theta),  # Trefoil-0
+         (10. / 7.) * (rho * r2) * np.cos(3. * theta),  # Trefoil-30
          ]
 
-    if nterms > len(H)-1:
-        raise NotImplementedError("hexicke_basis_analytic doesn't support that many terms yet")
+    if nterms > len(H) - 1:
+        raise NotImplementedError("hexicke_basis_wss doesn't support that many terms yet")
     else:
         # apply aperture mask
-        for i in range(1,nterms+1):
-            H[i] *= aperture
-        return H[1:nterms+1]
+        basis = np.asarray(H[1:])  # drop the 0th null element
+        basis[:, ~apmask] = outside
+        return basis[0:nterms]
+        # for i in range(1,nterms+1):
+        # H[i] *= aperture
+        # return H[1:nterms+1]
 
-hexike_basis_wss.label_strings = ['Piston','X tilt', 'Y tilt', 'Astigmatism-45','Focus','Astigmatism-00','Coma X','Coma Y','Spherical','Trefoil-0','Trefoil-30']
+
+hexike_basis_wss.label_strings = ['Piston', 'X tilt', 'Y tilt',
+                                  'Astigmatism-45', 'Focus', 'Astigmatism-00',
+                                  'Coma X', 'Coma Y',
+                                  'Spherical', 'Trefoil-0', 'Trefoil-30']
 
 
 def arbitrary_basis(aperture, nterms=15, rho=None, theta=None, outside=np.nan):
@@ -707,8 +732,11 @@ def arbitrary_basis(aperture, nterms=15, rho=None, theta=None, outside=np.nan):
 
     Parameters
     -----------
-    aperture : array_like
-        2D binary array representing the arbitrary aperture
+    aperture : 2D array_like
+        2D array representing the arbitrary aperture.
+        All positive nonzero values are considered within the aperture;
+        any pixels with zero, negative, or NaN values will be considered
+        outside the aperture, and set equal to the 'outside' parameter value.
     nterms : int, optional
         Number of Zernike terms to return, starting from piston.
         (e.g. ``nterms=1`` would return only the Zernike piston term.)
@@ -718,7 +746,7 @@ def arbitrary_basis(aperture, nterms=15, rho=None, theta=None, outside=np.nan):
         and 1.0 at the edge of the pupil. `theta` should be
         the angle in radians.
     outside : float
-        Value for pixels outside the circular aperture (rho > 1).
+        Value for pixels outside the specified aperture.
         Default is `np.nan`, but you may also find it useful for this to
         be 0.0 sometimes.
     """
@@ -728,21 +756,26 @@ def arbitrary_basis(aperture, nterms=15, rho=None, theta=None, outside=np.nan):
     assert len(shape) == 2 and shape[0] == shape[1], \
         "only square aperture arrays are supported"
 
+    # any pixels with zero or NaN in the aperture are outside the area
+    apmask = (np.isfinite(aperture) & (aperture > 0))
+    apmask_float = np.asarray(apmask, float)
+    A = apmask.sum()
+
     if theta is None and rho is None:
         # To avoid clipping the aperture, we precompute the zernike modes
-        # on an array oversized s.t. the zernike disk circumscribes the 
-        # entire aperture. We then slice the zernike array down to the 
+        # on an array oversized s.t. the zernike disk circumscribes the
+        # entire aperture. We then slice the zernike array down to the
         # requested array size and cut the aperture out of it.
 
         # get max extent of aperture from array center
-        yind, xind = np.where(aperture > 0)
-        distance = np.sqrt( (yind - (shape[0] - 1) / 2.)**2 + (xind - (shape[1] - 1) / 2.)**2 )
+        yind, xind = np.where(apmask)
+        distance = np.sqrt((yind - (shape[0] - 1) / 2.) ** 2 + (xind - (shape[1] - 1) / 2.) ** 2)
         max_extent = distance.max()
 
         # calculate padding for oversizing zernike_basis
-        ceil = lambda x: np.ceil(x) if x > 0 else 0 # avoid negative values
-        padding = ( int(ceil((max_extent - (shape[0] - 1) / 2.))),
-                    int(ceil((max_extent - (shape[1] - 1) / 2.))) )
+        ceil = lambda x: np.ceil(x) if x > 0 else 0  # avoid negative values
+        padding = (int(ceil((max_extent - (shape[0] - 1) / 2.))),
+                   int(ceil((max_extent - (shape[1] - 1) / 2.))))
         padded_shape = (shape[0] + padding[0] * 2, shape[1] + padding[1] * 2)
         npix = padded_shape[0]
 
@@ -750,24 +783,23 @@ def arbitrary_basis(aperture, nterms=15, rho=None, theta=None, outside=np.nan):
         Z = np.zeros((nterms + 1,) + padded_shape)
         Z[1:] = zernike_basis(nterms=nterms, npix=npix, rho=rho, theta=theta, outside=0.0)
         # slice down to original aperture array size
-        Z = Z[:,padding[0]:padded_shape[0] - padding[0],
-                padding[1]:padded_shape[1] - padding[1]]
+        Z = Z[:, padding[0]:padded_shape[0] - padding[0],
+              padding[1]:padded_shape[1] - padding[1]]
     else:
         # precompute zernikes on user-defined rho, theta
         Z = np.zeros((nterms + 1,) + shape)
         Z[1:] = zernike_basis(nterms=nterms, rho=rho, theta=theta, outside=0.0)
 
-    A = aperture.sum()
     G = [np.zeros(shape), np.ones(shape)]  # array of G_i etc. intermediate fn
-    H = [np.zeros(shape), np.ones(shape) * aperture]  # array of zernikes on arbitrary basis
+    H = [np.zeros(shape), apmask_float.copy()]  # array of zernikes on arbitrary basis
     c = {}  # coefficients hash
 
     for j in np.arange(nterms - 1) + 1:  # can do one less since we already have the piston term
         _log.debug("  j = " + str(j))
         # Compute the j'th G, then H
-        nextG = Z[j + 1] * aperture
+        nextG = Z[j + 1] * apmask_float
         for k in np.arange(j) + 1:
-            c[(j + 1, k)] = -1 / A * (Z[j + 1] * H[k] * aperture).sum()
+            c[(j + 1, k)] = -1 / A * (Z[j + 1] * H[k] * apmask_float).sum()
             if c[(j + 1, k)] != 0:
                 nextG += c[(j + 1, k)] * H[k]
             _log.debug("    c[%s] = %f", str((j + 1, k)), c[(j + 1, k)])
@@ -777,23 +809,144 @@ def arbitrary_basis(aperture, nterms=15, rho=None, theta=None, outside=np.nan):
         G.append(nextG)
         H.append(nextH)
 
-        #TODO - contemplate whether the above algorithm is numerically stable
+        # TODO - contemplate whether the above algorithm is numerically stable
         # cf. modified gram-schmidt algorithm discussion on wikipedia.
 
-    basis = np.asarray(H[1:]) # drop the 0th null element
-    basis[:,aperture < 1] = outside
+    basis = np.asarray(H[1:])  # drop the 0th null element
+    basis[:, ~apmask] = outside
 
     return basis
 
+class Segment_PTT_Basis(object):
+    def __init__(self, rings=2, flattoflat=1*u.m, gap=1*u.cm, center=False,
+                pupil_diam=None):
+        """
+        Eigenbasis of segment pistons, tips, tilts.
+        (Or of pistons only using the Segment_Piston_Basis subclass.)
+
+        The aperture geometry is specified identically to
+        the MultiHexagonAperture class. Set that when creating
+        an instance of this class, then you can call the resulting function object
+        to generate a basis set with the desired sampling, or pass it to
+        the opd_from_zernikes or opd_expand_segments functions.
+
+        The basis is generated over a square array that exactly circumscribes
+        the hexagonal aperture.
+
+        Parameters
+        ----------
+        rings : int
+            Number of rings of segments
+        flattoflat : float or astropy.Quantity length
+            Size of a single segment
+        gap : float or astropy.Quantity length
+            Gap between adjacent segments
+        center : bool
+            Include the center segment?
+        pupil_diam : float oar astropy.Quantity length
+            Diameter of the array on which to generate the basis; by default
+            this is chosen to circumscribe the multihex aperture given the
+            specified segment and gap sizes and number of segments.
+
+        """
+        # Internally this is implemented as a wrapper on HexDM which in turn is
+        # a wrapper on MultiHexagonAperture
+        import poppy.dms
+        self.hexdm = poppy.dms.HexSegmentedDeformableMirror(rings=rings,
+                                              flattoflat=flattoflat,
+                                              gap=gap,
+                                              center=center)
+        if pupil_diam is not None:
+            self.hexdm.pupil_diam = pupil_diam
+        self.segmentlist = self.hexdm.segmentlist
+        self.nsegments = len(self.hexdm.segmentlist)
+
+    def aperture(self, npix=512):
+        """ Return the overall aperture across all segments """
+        return self.hexdm.sample(npix=npix)
+
+    def __call__(self, nterms=None, npix=512, outside=np.nan):
+        """ Generate PTT basis ndarray for the specified aperture
+
+        Parameters
+        ----------
+        nterms : int
+            Number of terms. Set to 3x the number of segments.
+        npix : int
+            Size, in pixels, of the aperture array.
+        outside : float
+            Value for pixels outside the specified aperture.
+            Default is `np.nan`, but you may also find it useful for this to
+            be 0.0 sometimes.
+
+        """
+
+        if nterms is None:
+            nterms = 3*self.nsegments
+        elif nterms > 3*self.nsegments:
+            raise ValueError("nterms must be <= {} for the specified segment aperture.".format(3*self.nsegments))
+
+        # Re-use the machinery inside the HexSegmentedDM class to set up the
+        # arrays defining the segment and zernike geometry.
+        self.hexdm.sample(npix=npix)
+
+        # For simplicity we always generate the basis for all the segments
+        # even if for some reason the user has set a smaller nterms.
+        basis = np.zeros((self.nsegments*3, npix, npix))
+        basis[:] = outside
+        for i, segi in enumerate(self.hexdm.segmentlist):
+            wseg = self.hexdm._seg_indices[segi]
+            basis[i*3][wseg] = 1   #Piston
+            basis[i*3+1][wseg] = self.hexdm._seg_x[wseg] # Tip
+            basis[i*3+2][wseg] = self.hexdm._seg_y[wseg] # Tilt
+
+        return basis[0:nterms]
+
+class Segment_Piston_Basis(Segment_PTT_Basis):
+    def __call__(self, nterms=None, npix=512, outside=np.nan):
+        """ Generate piston-only basis ndarray for the specified aperture
+
+        Parameters
+        ----------
+        nterms : int
+            Number of terms. Set to 3x the number of segments.
+        npix : int
+            Size, in pixels, of the aperture array.
+        outside : float
+            Value for pixels outside the specified aperture.
+            Default is `np.nan`, but you may also find it useful for this to
+            be 0.0 sometimes.
+
+        """
+
+        if nterms is None:
+            nterms = self.nsegments
+        elif nterms > self.nsegments:
+            raise ValueError("nterms must be <= {} for the specified segment aperture.".format(self.nsegments))
+
+        aperture = self.hexdm.sample(npix=npix)
+
+        # For simplicity we always generate the basis for all the segments
+        # even if for some reason the user has set a smaller nterms.
+        basis = np.zeros((self.nsegments, npix, npix))
+        basis[:] = outside
+        for i, segi in enumerate(self.hexdm.segmentlist):
+            wseg = self.hexdm._seg_indices[segi]
+            basis[i][wseg] = 1   #Piston
+
+        return basis[0:nterms]
+
 
 def opd_expand(opd, aperture=None, nterms=15, basis=zernike_basis,
-              **kwargs):
+               **kwargs):
     """Given a wavefront OPD map, return the list of coefficients in a
     given basis set (by default, Zernikes) that best fit the OPD map.
 
     Note that this implementation of the function treats the Zernikes as
     an orthonormal basis, which is only true on the unobscured unit circle.
-    See also `opd_expand_nonorthonormal` for an alternative approach.
+    See also `opd_expand_nonorthonormal` for an alternative approach for
+    basis vectors that are not orthonormal, or `opd_expand_segments` for
+    basis vectors defined over physically disjoint segments.
 
     Parameters
     ----------
@@ -801,10 +954,14 @@ def opd_expand(opd, aperture=None, nterms=15, basis=zernike_basis,
         The wavefront OPD map to expand in terms of the requested basis.
         Must be square.
     aperture : 2D numpy.ndarray, optional
-        ndarray giving the aperture mask to use
-        (1.0 where light passes, 0.0 where it is blocked).
-        If not explicitly specified, all finite points in the `opd`
-        array (i.e. not NaNs) are assumed to define the pupil aperture.
+        Aperture mask for which pixels are included within the aperture.
+        NOTE - this is handed through to the basis function (see basis parameter)
+        which is responsible for implementing this masking, if appropriate.
+        All positive nonzero values are considered within the aperture;
+        any pixels with zero, negative, or NaN values will be considered
+        outside the aperture, and set equal to the 'outside' parameter value.
+        If this parameter is not set, the aperture will be inferred from
+        the finite (i.e. non-NaN) pixels in the OPD array.
     nterms : int
         Number of terms to use. (Default: 15)
     basis : callable, optional
@@ -832,19 +989,23 @@ def opd_expand(opd, aperture=None, nterms=15, basis=zernike_basis,
     """
 
     if aperture is None:
-        _log.warn("No aperture supplied - "
+        _log.warning("No aperture supplied - "
                   "using the finite (non-NaN) part of the OPD map as a guess.")
-        aperture = np.isfinite(opd).astype(np.float)
+        aperture = np.isfinite(opd)  # . astype(np.float)
+
+    # any pixels with zero or NaN in the aperture are outside the area
+    apmask = (np.isfinite(aperture) & (aperture > 0))
 
     basis_set = basis(
         nterms=nterms,
         npix=opd.shape[0],
         outside=np.nan,
+        aperture=aperture,
         **kwargs
     )
 
-    wgood = np.where((aperture != 0.0) & np.isfinite(basis_set[1]))
-    ngood = (wgood[0]).size
+    wgood = np.where(apmask)
+    ngood = apmask.sum()
 
     coeffs = [(opd * b)[wgood].sum() / ngood
               for b in basis_set]
@@ -853,7 +1014,7 @@ def opd_expand(opd, aperture=None, nterms=15, basis=zernike_basis,
 
 
 def opd_expand_nonorthonormal(opd, aperture=None, nterms=15, basis=zernike_basis_faster,
-                  iterations=5, **kwargs):
+                              iterations=5, verbose=False, **kwargs):
     """ Modified version of opd_expand, for cases where the basis function is
     *not* orthonormal, for instance using the regular Zernike functions on
     obscured apertures.
@@ -865,29 +1026,50 @@ def opd_expand_nonorthonormal(opd, aperture=None, nterms=15, basis=zernike_basis
 
     Based on various empirical experimentation for what is necessary to get
     reasonable behavior in this non-ideal case. Factors to consider:
+
     1) Masking to use just pixels good in both the zernike unit circle and the
        asymmetric numerical aperture
+
     2) Subtracting off the fit terms as you go, so as to not fit the same WFE
        multiple times
+
     3) Iterating multiples by re-fitting the residual, to include as much WFE
        as possible.
 
     Parameters
     -----------
-    opd : the OPD you want to fit
-    aperture : an aperture mask of which pixels are valid. ANything non-NaN is
-               considered valid
-    nterms : number of terms to fit
-    basis: which basis function to use. Defaults to Zernike
+    opd : 2d ndarray
+        the OPD you want to fit
+    aperture : 2D numpy array, optional
+        Aperture mask for which pixels are included within the aperture.
+        All positive nonzero values are considered within the aperture;
+        any pixels with zero, negative, or NaN values will be considered
+        outside the aperture, and set equal to the 'outside' parameter value.
+        If this parameter is not set, the aperture will be inferred from
+        the finite (i.e. non-NaN) pixels in the OPD array.
+    nterms : int
+        number of terms to fit
+    basis : function
+        which basis function to use. Defaults to Zernike
     iterations : int
         Number of iterations for convergence. Default is 5
 
     """
 
     if aperture is None:
-        _log.warn("No aperture supplied - "
+        _log.warning("No aperture supplied - "
                   "using the finite (non-NaN) part of the OPD map as a guess.")
-        aperture = np.isfinite(opd).astype(np.float)
+        aperture = np.isfinite(opd)
+
+    # any pixels with zero or NaN in the aperture are outside the area
+    apmask = (np.isfinite(aperture) & (aperture > 0))
+
+    # Determine if this basis function accepts an 'aperture' parameter or not
+    # If so, append that into the function's kwargs. This check is needed to
+    # handle e.g. both the zernike_basis function (which doesn't accept aperture)
+    # and hexike_basis or arbitrary_basis (which do).
+    if 'aperture' in inspect.signature(basis).parameters:
+        kwargs['aperture'] = aperture
 
     basis_set = basis(
         nterms=nterms,
@@ -896,23 +1078,25 @@ def opd_expand_nonorthonormal(opd, aperture=None, nterms=15, basis=zernike_basis
         **kwargs
     )
 
-    wgood = np.where((aperture != 0.0) & np.isfinite(aperture) & np.isfinite(basis_set[1]))
-    ngood = (wgood[0]).size
+    wgood = np.where(apmask & np.isfinite(basis_set[1]))
+    ngood = apmask.sum()
 
     coeffs = np.zeros(nterms)
     opd_copy = np.copy(opd)
 
     for count in range(iterations):
-        for i,b in enumerate(basis_set):
+        for i, b in enumerate(basis_set):
             this_coeff = (opd_copy * b)[wgood].sum() / ngood
-            opd_copy  -= this_coeff * b
+            opd_copy -= this_coeff * b
             coeffs[i] += this_coeff
+        if verbose:
+            print("Iteration {}/{}: {}".format(count, iterations, coeffs))
 
     return coeffs
 
 
 def opd_from_zernikes(coeffs, basis=zernike_basis_faster, aperture=None, outside=np.nan,
-        **kwargs):
+                      **kwargs):
     """ Synthesize an OPD from a set of coefficients
 
     Parameters
@@ -921,8 +1105,17 @@ def opd_from_zernikes(coeffs, basis=zernike_basis_faster, aperture=None, outside
         Coefficients for the Zernike terms
     basis : callable
         Which basis set. Defaults to Zernike
-    aperture : ndarray, optional
-        Aperture mask, if provided. Defaults to the unit circle filling the array
+    aperture : 2D ndarray, optional
+        Aperture mask for which pixels are included within the aperture.
+        All positive nonzero values are considered within the aperture;
+        any pixels with zero, negative, or NaN values will be considered
+        outside the aperture, and set equal to the 'outside' parameter value.
+        If this parameter is not set, the aperture will be default to
+        the 2D unit circle.
+    outside : float
+        Value for pixels outside the specified aperture.
+        Default is `np.nan`, but you may also find it useful for this to
+        be 0.0 sometimes.
 
     Other parameters are supported via **kwargs, in particular setting the
     size of the OPD via npix.
@@ -932,6 +1125,14 @@ def opd_from_zernikes(coeffs, basis=zernike_basis_faster, aperture=None, outside
     opd = opd_from_zernikes([0,0,-5,1,0,4,0,8], npix=512)
 
     """
+
+    # Determine if this basis function accepts an 'aperture' parameter or not
+    # If so, append that into the function's kwargs. This check is needed to
+    # handle e.g. both the zernike_basis function (which doesn't accept aperture)
+    # and hexike_basis or arbitrary_basis (which do).
+    if 'aperture' in inspect.signature(basis).parameters:
+        kwargs['aperture'] = aperture
+
     basis_set = basis(
         nterms=len(coeffs),
         outside=outside,
@@ -940,10 +1141,122 @@ def opd_from_zernikes(coeffs, basis=zernike_basis_faster, aperture=None, outside
 
     output = np.zeros_like(basis_set[0])
 
-    for i, b in enumerate(basis_set):
-        if coeffs[i] !=0:
-            output += coeffs[i]*b
+    # Check if basis area is the same for all elements (like zernike)
+    # or varies (like segment PTT bases).
+    # Use a simple proxy for this, by checking if first and last are the same
+
+    constant_support =  np.allclose(np.isfinite(basis_set[0]), np.isfinite(basis_set[-1]))
+
+    if constant_support:
+        # we can just sum the whole arrays
+        for i, b in enumerate(basis_set):
+            if coeffs[i] != 0:
+                output += coeffs[i] * b
+    else:
+        # we have to use different good pixel areas per each basis element
+        for i, b in enumerate(basis_set):
+            if coeffs[i] != 0:
+                wgood = np.isfinite(b)
+                output[wgood] += coeffs[i] * b[wgood]
+
     if aperture is not None:
-        output[~np.isfinite(aperture)] = np.nan
-        output[aperture==0] = 0
+        apmask = (np.isfinite(aperture) & (aperture > 0))
+        output[~apmask] = outside
+    elif aperture is None and not constant_support:
+        apmask = np.isfinite(basis_set).sum(axis=0) > 0
+        output[~apmask] = outside
+
     return output
+
+
+def opd_expand_segments(opd, aperture=None, nterms=15, basis=None,
+                              iterations=2, verbose=False, **kwargs):
+    """
+    Expand OPD into a basis defined by segments, typically with piston, tip, & tilt of each.
+
+    Similar algorithm as opd_expand_nonorthonormal, but adjusted slightly for
+    spatially disjoint basis vectors, and also for different expected normalization
+    of the piston and tip/tilt basis terms.
+
+    The segment_piston_basis and segment_ptt_basis functions are intended for use with this,
+    but it should be generally applicable to higher order hexikes or zernikes defined per segment as well.
+
+    Rather than supplying directly e.g. the segment_ptt_basis function with its default
+    parameters, you will likely want to provide a custom basis wrapper function that sets the
+    number of segments, segment size, etc. as appropriate for your chosen segmented aperture.
+
+
+    Parameters
+    ----------
+    opd : 2D numpy.ndarray
+        The wavefront OPD map to expand in terms of the requested basis.
+        Must be square.
+    aperture : 2D numpy.ndarray, optional
+        Aperture mask for which pixels are included within the aperture.
+        NOTE - this is handed through to the basis function (see basis parameter)
+        which is responsible for implementing this masking, if appropriate.
+        All positive nonzero values are considered within the aperture;
+        any pixels with zero, negative, or NaN values will be considered
+        outside the aperture, and set equal to the 'outside' parameter value.
+        If this parameter is not set, the aperture will be inferred from
+        the finite (i.e. non-NaN) pixels in the OPD array.
+    nterms : int
+        Number of terms to use. (Default: 15)
+    basis : callable, optional
+        Callable (e.g. a function) that generates a sequence
+        of basis arrays given arguments `nterms`, `npix`, and `outside`.
+        This should be an instance of Segment_Piston_Basis() or
+        Segment_PTT_Basis(), or an equivalent.
+
+    """
+    if basis is None:
+        raise ValueError("Must supply a basis function defining the desired segment set")
+
+    if aperture is None:
+        _log.warning("No aperture supplied - "
+                  "using the finite (non-NaN) part of the OPD map as a guess.")
+        aperture = np.isfinite(opd)
+
+    # any pixels with zero or NaN in the aperture are outside the area
+    apmask = (np.isfinite(aperture) & (aperture > 0))
+
+    # Determine if this basis function accepts an 'aperture' parameter or not
+    # If so, append that into the function's kwargs. This check is needed to
+    # handle e.g. both the zernike_basis function (which doesn't accept aperture)
+    # and hexike_basis or arbitrary_basis (which do).
+    if 'aperture' in inspect.signature(basis).parameters:
+        kwargs['aperture'] = aperture
+
+    basis_set = basis(
+        nterms=nterms,
+        npix=opd.shape[0],
+        outside=np.nan,
+        **kwargs
+    )
+
+    coeffs = np.zeros(nterms)
+    opd_copy = np.copy(opd)
+
+    for count in range(iterations):
+        for i, b in enumerate(basis_set):
+            # The number of good pixels can vary per each segment
+            # So we must determine an appropriate mask per each basis element
+            this_seg_mask = apmask & np.isfinite(basis_set[i])
+            wgood = np.where(this_seg_mask)
+            ngood = this_seg_mask.sum()
+
+            # The piston and tip/tilt terms are likely not normalized
+            # with respect to each other (in the sense of an orthonormal basis)
+            # So we also have to determine some appropriate scaling coefficient
+            # for our dot product here.
+            normcoeff = (basis_set[i]**2)[wgood].sum() / ngood
+
+            # Now we can perform the dot product
+            this_coeff = (opd_copy * b)[wgood].sum() / ngood / normcoeff
+            opd_copy[wgood] -= this_coeff * b[wgood]
+            coeffs[i] += this_coeff
+
+        if verbose:
+            print("Iteration {}/{}: {}".format(count, iterations, coeffs))
+    return coeffs
+

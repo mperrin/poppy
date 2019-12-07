@@ -1,5 +1,4 @@
 # Tests for individual Optic classes
-from __future__ import (absolute_import, division, print_function, unicode_literals)
 
 import matplotlib.pyplot as pl
 import numpy as np
@@ -37,7 +36,7 @@ def test_InverseTransmission():
         assert( np.all(  np.abs(optic.get_phasor(wave) - (1-inverted.get_phasor(wave))) < 1e-10 ))
 
     # vary 2d shape
-    for radius in np.arange(10, dtype=float)/10:
+    for radius in np.arange(1, 11, dtype=float)/10:
 
         optic = optics.CircularAperture(radius=radius)
         inverted = optics.InverseTransmission(optic)
@@ -72,6 +71,90 @@ def test_roundtrip_through_FITS():
     assert np.all(optic2.amplitude == array), "Arrays before/after casting to FITS file didn't match"
 
 
+def test_shifting_optics( npix=30,  grid_size = 3, display=False):
+    """Test shifting (translation) of Analytic and FITS Optical elements.
+    Does shifting work as expected? Is it consistent between the two classes?
+
+    Tests the fix for #247
+    """
+    import poppy
+    pixsize =grid_size/npix
+    shift_size = np.round(0.2/pixsize)*pixsize  # by construction, an integer # of pixels
+
+    # Create a reference array
+    circ = poppy.CircularAperture()
+    circ_samp = circ.sample(npix=npix, grid_size=grid_size)
+
+    # Create a shifted version, and make sure it's different
+    circ_shift = poppy.CircularAperture( shift_x=shift_size)
+    circ_shift_samp = circ_shift.sample(npix=npix, grid_size=grid_size)
+
+    if display:
+        plt.imshow(circ_samp-circ_shift_samp)
+    assert np.allclose(circ_samp, circ_shift_samp) is False, "Shift didn't change array"
+
+    # Make a FITS element.
+    circ_fits = circ.to_fits(npix=npix, grid_size=grid_size)
+
+    # Show we can shift that and get the same result as shifting the analytic element
+    fits_shifted = poppy.FITSOpticalElement(transmission=circ_fits, shift_x=shift_size)
+    np.testing.assert_allclose(fits_shifted.amplitude, circ_shift_samp, atol=1e-9,
+                                       err_msg="Shifting Analytic and FITS versions are not consistent (v1, via shift_x)")
+
+    # FITSOpticalElement also lets you specify shifts via fraction of the array. Let's
+    # show that is  consistent.  This is older syntax that is discouraged, and may be
+    # deprecated and removed eventually. But while available it should be correct.
+    array_frac = shift_size/grid_size
+    fits_shifted_v2 = poppy.FITSOpticalElement(transmission=circ_fits, shift=(array_frac, 0))
+    np.testing.assert_allclose(fits_shifted.amplitude, fits_shifted_v2.amplitude, atol=1e-9,
+                                       err_msg="Shifting FITS via shift/shift_x are not consistent")
+    np.testing.assert_allclose(fits_shifted.amplitude, circ_shift_samp, atol=1e-9,
+                                       err_msg="Shifting Analytic and FITS versions are not consistent (v2, via shift)")
+
+
+    # Check in a 1D cut that the amount of shift is as expected -
+    # this is implicitly also checked above via the match of Analytic and FITS
+    # which use totally different methods to perform the shift.
+    shift_in_pixels = int(shift_size/pixsize)
+    assert np.allclose(np.roll(circ_samp[npix//2], shift_in_pixels),
+                               circ_shift_samp[npix//2])
+
+
+def test_shift_rotation_consistency(npix=30, grid_size = 1.5, angle=35, display=False):
+    """Test shifting & rotation together for FITS and Analytic optics
+    Do we get consistent behavior from each? Are the signs and
+    order of operations consistent?
+
+    Tests the fix for issue #275.
+    """
+    import poppy
+    if npix < 30:
+        raise ValueError("Need npix>=30 for enough resolution for this test")
+
+    # Create rectangle, rotated
+    rect = poppy.RectangleAperture(shift_x=0.25, rotation=angle)
+    rect_samp = rect.sample(grid_size=grid_size, npix=npix)
+
+    # Create rectangle, turn into FITS, then rotate
+    rect_fits = poppy.RectangleAperture().to_fits(grid_size=grid_size, npix=npix)
+    rect2 = poppy.FITSOpticalElement(transmission=rect_fits, shift_x=0.25, rotation=angle)
+
+    # Compare that they are consistent enough, meaning
+    # no more than 1% pixel difference. That tolerance allows for the
+    # imprecision of rotating low-res binary masks.
+    diff = np.round(rect2.amplitude)-rect_samp
+    assert np.abs(diff).sum() <= 0.01*rect_samp.sum(), "Shift and rotations differ unexpectedly"
+
+    if display:
+        plt.figure()
+        plt.subplot(131)
+        plt.imshow(rect_samp)
+        plt.subplot(132)
+        plt.imshow(np.round(rect2.amplitude))
+        plt.subplot(133)
+        plt.imshow(diff)
+
+
 #------ Analytic Image Plane elements -----
 
 def test_RectangularFieldStop():
@@ -92,6 +175,20 @@ def test_SquareFieldStop():
     assert wave.intensity.sum() == 400 # 1/10 of the 1e4 element array
 
 
+def test_CircularPhaseMask():
+    import poppy
+    optic= optics.CircularPhaseMask(radius=1, retardance=0.25, wavelength=3e-6)
+    wave = poppy_core.Wavefront(npix=100, pixelscale=0.05, wavelength=3e-6)
+
+    wave*= optic
+    assert wave.phase[50,0]==0
+    assert wave.phase[50,29]==0
+    np.testing.assert_almost_equal(wave.phase[50,30], np.pi/2)
+    np.testing.assert_almost_equal(wave.phase[50,50], np.pi/2)
+    np.testing.assert_almost_equal(wave.phase[50,69], np.pi/2)
+    assert wave.phase[50,70]==0
+    assert wave.phase[50,80]==0
+
 
 def test_BarOcculter():
     optic= optics.BarOcculter(width=1, rotation=0)
@@ -108,16 +205,26 @@ def test_AnnularFieldStop():
 
     wave*= optic
     # Just check a handful of points that it goes from 0 to 1 back to 0
-    assert wave.intensity[50,50] == 0
-    assert wave.intensity[55,50] == 0
-    assert wave.intensity[60,50] == 1
-    assert wave.intensity[69,50] == 1
-    assert wave.intensity[75,50] == 0
-    assert wave.intensity[95,50] == 0
+    np.testing.assert_almost_equal( wave.intensity[50,50], 0)
+    np.testing.assert_almost_equal( wave.intensity[55,50], 0)
+    np.testing.assert_almost_equal( wave.intensity[60,50], 1)
+    np.testing.assert_almost_equal( wave.intensity[68,50], 1)
+    np.testing.assert_almost_equal( wave.intensity[75,50], 0)
+    np.testing.assert_almost_equal( wave.intensity[95,50], 0)
     # and check the area is approximately right
     expected_area = np.pi*(optic.radius_outer**2 - optic.radius_inner**2) * 100
+    expected_area = expected_area.to(u.arcsec**2).value
+
+    # updated criteria for dealing with gray pixels
+    # sum of pixels should be close to this, and just a bit less than it
     area = wave.intensity.sum()
-    assert np.abs(expected_area-area) < 0.01*expected_area
+    assert expected_area-area < 0.05*expected_area
+    assert expected_area-area >0
+    # if we count the number of pixels that are significantly nonzero
+    # it should be a bit above the desired area
+    area_upper_bound = (wave.intensity > 0.01).sum()
+    assert area_upper_bound > expected_area
+    assert area_upper_bound < expected_area*1.1
 
 
 def test_BandLimitedOcculter(halfsize = 5) :
@@ -286,11 +393,11 @@ def test_ObscuredCircularAperture_Airy(display=False):
 
     # Numeric PSF for 1 meter diameter aperture
     osys = poppy_core.OpticalSystem()
-    osys.addPupil(
+    osys.add_pupil(
             optics.CompoundAnalyticOptic( [optics.CircularAperture(radius=pri_diam/2) ,
                                            optics.SecondaryObscuration(secondary_radius=sec_diam/2, n_supports=0) ]) )
-    osys.addDetector(pixelscale=0.010,fov_pixels=512, oversample=1)
-    numeric = osys.calcPSF(wavelength=1.0e-6, display=False)
+    osys.add_detector(pixelscale=0.010,fov_pixels=512, oversample=1)
+    numeric = osys.calc_psf(wavelength=1.0e-6, display=False)
 
     # Comparison
     difference = numeric[0].data-analytic
@@ -327,7 +434,7 @@ def test_CompoundAnalyticOptic(display=False):
     # First test the "and" mergemode
 
     osys_compound = poppy_core.OpticalSystem()
-    osys_compound.addPupil(
+    osys_compound.add_pupil(
         optics.CompoundAnalyticOptic([
             optics.CircularAperture(radius=r),
             optics.ThinLens(nwaves=nwaves, reference_wavelength=wavelen,
@@ -335,15 +442,15 @@ def test_CompoundAnalyticOptic(display=False):
         ]
         , mergemode='and')
     )
-    osys_compound.addDetector(pixelscale=0.010, fov_pixels=512, oversample=1)
-    psf_compound = osys_compound.calcPSF(wavelength=wavelen, display=False)
+    osys_compound.add_detector(pixelscale=0.010, fov_pixels=512, oversample=1)
+    psf_compound = osys_compound.calc_psf(wavelength=wavelen, display=False)
 
     osys_separate = poppy_core.OpticalSystem()
-    osys_separate.addPupil(optics.CircularAperture(radius=r))    # pupil radius in meters
-    osys_separate.addPupil(optics.ThinLens(nwaves=nwaves, reference_wavelength=wavelen,
+    osys_separate.add_pupil(optics.CircularAperture(radius=r))    # pupil radius in meters
+    osys_separate.add_pupil(optics.ThinLens(nwaves=nwaves, reference_wavelength=wavelen,
                                            radius=r))
-    osys_separate.addDetector(pixelscale=0.010, fov_pixels=512, oversample=1)
-    psf_separate = osys_separate.calcPSF(wavelength=wavelen, display=False)
+    osys_separate.add_detector(pixelscale=0.010, fov_pixels=512, oversample=1)
+    psf_separate = osys_separate.calc_psf(wavelength=wavelen, display=False)
 
     if display:
         from matplotlib import pyplot as plt
@@ -362,7 +469,7 @@ def test_CompoundAnalyticOptic(display=False):
     # This creates two overlapping RectangleAperture with different
     # heights and check that the result equals the larger
 
-    #TODO this fails.  Looks like the resulting aperture is too small when doing calcPSF.
+    #TODO this fails.  Looks like the resulting aperture is too small when doing calc_psf.
 
     w = 1.0
     h1=2.0 
@@ -374,17 +481,17 @@ def test_CompoundAnalyticOptic(display=False):
             optics.RectangleAperture(width=w, height=h2)
         ]
         , mergemode='or')
-    osys_compound.addPupil(
+    osys_compound.add_pupil(
         osys_c_pupil
     )
-    osys_compound.addDetector(pixelscale=0.010, fov_pixels=512, oversample=1)
-    psf_compound, ints_compound = osys_compound.calcPSF(wavelength=wavelen, display=False, return_intermediates=True)
+    osys_compound.add_detector(pixelscale=0.010, fov_pixels=512, oversample=1)
+    psf_compound, ints_compound = osys_compound.calc_psf(wavelength=wavelen, display=False, return_intermediates=True)
 
     osys_separate = poppy_core.OpticalSystem()
     osys_s_pupil = optics.RectangleAperture(width=w, height=max(h1, h2))
-    osys_separate.addPupil(osys_s_pupil)
-    osys_separate.addDetector(pixelscale=0.010, fov_pixels=512, oversample=1)
-    psf_separate, ints_separate = osys_separate.calcPSF(wavelength=wavelen, display=False, return_intermediates=True)
+    osys_separate.add_pupil(osys_s_pupil)
+    osys_separate.add_detector(pixelscale=0.010, fov_pixels=512, oversample=1)
+    psf_separate, ints_separate = osys_separate.calc_psf(wavelength=wavelen, display=False, return_intermediates=True)
     if display: 
         #from matplotlib import pyplot as plt
         #from poppy import utils
@@ -435,12 +542,12 @@ def test_AsymmetricObscuredAperture(display=False):
 
     # Numeric PSF for 1 meter diameter aperture
     osys = poppy_core.OpticalSystem()
-    osys.addPupil(
+    osys.add_pupil(
             optics.CompoundAnalyticOptic( [optics.CircularAperture(radius=pri_diam/2) ,
                                            optics.AsymmetricSecondaryObscuration(secondary_radius=sec_diam/2, support_angle=[0,150,210], support_width=0.1) ]) )
-    osys.addDetector(pixelscale=0.030,fov_pixels=512, oversample=1)
+    osys.add_detector(pixelscale=0.030,fov_pixels=512, oversample=1)
     if display: osys.display()
-    numeric = osys.calcPSF(wavelength=1.0e-6, display=False)
+    numeric = osys.calc_psf(wavelength=1.0e-6, display=False)
 
     # Comparison
     difference = numeric[0].data-analytic
@@ -493,7 +600,6 @@ def test_GaussianAperture(display=False):
 def test_ThinLens(display=False):
     pupil_radius = 1
 
-    pupil = optics.CircularAperture(radius=pupil_radius)
     # let's add < 1 wave here so we don't have to worry about wrapping
     lens = optics.ThinLens(nwaves=0.5, reference_wavelength=1e-6, radius=pupil_radius)
     # n.b. npix is 99 so that there are an integer number of pixels per meter (hence multiple of 3)
@@ -501,31 +607,45 @@ def test_ThinLens(display=False):
     # Otherwise the strict test against half a wave min max doesn't work
     # because we're missing some (tiny but nonzero) part of the aperture
     wave = poppy_core.Wavefront(npix=99, diam=3.0, wavelength=1e-6)
-    wave *= pupil
     wave *= lens
 
-    assert np.allclose(wave.phase.max(),  np.pi/2)
-    assert np.allclose(wave.phase.min(), -np.pi/2)
+    # Now test the values at some precisely chosen pixels
+    y, x = wave.coordinates()
+    at_radius = np.where((x==1) & (y==0))
+    assert np.allclose(wave.phase[at_radius], -np.pi/2), "Didn't get -1/2 wave OPD at edge of optic"
+    assert len(at_radius[0]) > 0, "Array indices messed up - need to have a pixel at exactly (1,0)"
+
+    at_radius = np.where((x==0) & (y==1))
+    assert np.allclose(wave.phase[at_radius], -np.pi/2), "Didn't get -1/2 wave OPD at edge of optic"
+    assert len(at_radius[0]) > 0, "Array indices messed up - need to have a pixel at exactly (0,1)"
+
+
+    at_center = np.where((x==0) & (y==0))
+    assert np.allclose(wave.phase[at_center], np.pi/2), "Didn't get 1/2 wave OPD at center of optic"
+    assert len(at_radius[0]) > 0, "Array indices messed up - need to have a pixel at exactly (0,0)"
+
+    # TODO test intermediate pixel values between center and edge?
+
 
     # regression test to ensure null optical elements don't change ThinLens behavior
     # see https://github.com/mperrin/poppy/issues/14
     osys = poppy_core.OpticalSystem()
-    osys.addPupil(optics.CircularAperture(radius=1))
+    osys.add_pupil(optics.CircularAperture(radius=1))
     for i in range(3):
-        osys.addImage()
-        osys.addPupil()
+        osys.add_image()
+        osys.add_pupil()
 
-    osys.addPupil(optics.ThinLens(nwaves=0.5, reference_wavelength=1e-6,
+    osys.add_pupil(optics.ThinLens(nwaves=0.5, reference_wavelength=1e-6,
                                   radius=pupil_radius))
-    osys.addDetector(pixelscale=0.01, fov_arcsec=3.0)
-    psf = osys.calcPSF(wavelength=1e-6)
+    osys.add_detector(pixelscale=0.01, fov_arcsec=3.0)
+    psf = osys.calc_psf(wavelength=1e-6)
 
     osys2 = poppy_core.OpticalSystem()
-    osys2.addPupil(optics.CircularAperture(radius=1))
-    osys2.addPupil(optics.ThinLens(nwaves=0.5, reference_wavelength=1e-6,
+    osys2.add_pupil(optics.CircularAperture(radius=1))
+    osys2.add_pupil(optics.ThinLens(nwaves=0.5, reference_wavelength=1e-6,
                                    radius=pupil_radius))
-    osys2.addDetector(pixelscale=0.01, fov_arcsec=3.0)
-    psf2 = osys2.calcPSF()
+    osys2.add_detector(pixelscale=0.01, fov_arcsec=3.0)
+    psf2 = osys2.calc_psf()
 
 
     if display:
@@ -537,3 +657,11 @@ def test_ThinLens(display=False):
         "ThinLens shouldn't be affected by null optical elements! Introducing extra image planes "
         "made the output PSFs differ beyond numerical tolerances."
     )
+
+def test_fixed_sampling_optic():
+    optic= optics.HexagonAperture(side=1)
+    wave = poppy_core.Wavefront(npix=100, diam=10.0, wavelength=1e-6) # 10x10 meter square
+
+    array_optic= optics.fixed_sampling_optic(optic, wave, oversample=1)
+
+    assert np.allclose(array_optic.amplitude, optic.get_transmission(wave)), 'mismatch between original and fixed sampling version'
