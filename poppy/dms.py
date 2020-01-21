@@ -333,7 +333,7 @@ class ContinuousDeformableMirror(optics.AnalyticOpticalElement):
                     shift_y_pix = int(np.round(self.shift_y /pixscale_m))
                     interpolated_surface = np.roll(interpolated_surface, shift_y_pix, axis=0)
 
-        return interpolated_surface
+        return 2*interpolated_surface # note *2 to account for DM being reflective surface
 
     def _get_surface_arrays_with_orientation(self):
         """ Return representations of the DM actuators and masks

@@ -71,7 +71,6 @@ class subapertures(poppy.OpticalElement):
             self.x_y_offset=x_y_offset
             self.amplitude = np.asarray([1.])
             self.opd = np.asarray([0.])
-            self.pixelscale = None
             self.input_wavefront = None
             self.output_wavefront = None
             if detector == None:
@@ -94,13 +93,16 @@ class subapertures(poppy.OpticalElement):
                 
         def sample_wf(self, wf):
             '''
-            
+            subsamples wavefront optic in order to mupliply by optic array
+            creates array of wavefront objects for each subaperture optic
+
             Parameters
             ----------
-            
+            wf: wavefront object to subsample with subapertures optic array
             '''
             #save the input wavefront
             self.input_wavefront = wf
+            #create array of subsampled wavefronts
             for i in range(self.x_apertures):
                  for j in  range(self.y_apertures):
                     opt = self.optic_array[i][j] #get an optic
@@ -110,8 +112,8 @@ class subapertures(poppy.OpticalElement):
                         continue
                     
                     aper_per_dim = wf.diam /(opt.pupil_diam) #assuming squares
-                    
-                    self._w = opt.pupil_diam.to(u.m)/wf.pixelscale #subaperture width in pixels 
+
+                    self._w = opt.pupil_diam.to(u.m)/wf.pixelscale.to(u.m/u.pix) #subaperture width in pixels 
                     #the generated number of subapertures might not match the input wavefront dimensions
 
                     #want to center the subapertures on the incoming wavefront
@@ -119,29 +121,24 @@ class subapertures(poppy.OpticalElement):
                     self.c = wf.wavefront.shape[0]/2*u.pix #center of array
                     c=self.c
                     w=self._w
-                    sub_wf=wf.copy() #new wavefront has all the previous wavefront properties
-                    buffer = 0 #introducing buffer factor to avoid weird diffraction around the edges due to rounding 
-                    lower_x = int((c + w*(i)  - w*self.x_apertures/2).value - buffer)
-                    lower_y = int((c + w*(j)  - w*self.y_apertures/2).value - buffer)
-                    upper_x = int((c + w*(i+1)  - w*self.x_apertures/2).value + buffer)
-                    upper_y = int((c + w*(j+1)  - w*self.y_apertures/2).value + buffer)
-
+                    sub_wf=wf.copy() #new wavefront has all the previous wavefront properties except diameter
+                    sub_wf.diam = opt.pupil_diam # fix this diameter to avoid scaling issues
+                    lower_x = int((c + w*(i)  - w*self.x_apertures/2).value )
+                    lower_y = int((c + w*(j)  - w*self.y_apertures/2).value )
+                    upper_x = int((c + w*(i+1)  - w*self.x_apertures/2).value )
+                    upper_y = int((c + w*(j+1)  - w*self.y_apertures/2).value )
+                    # sample wf:
                     sub_wf.wavefront = wf.wavefront[lower_x:upper_x,lower_y:upper_y]
-                    self.pixelscale
-                    wf.pixelscale
+                    # multiply by subaperture optic:
                     self.wf_array[i][j] = sub_wf*opt
-                    print("sub/wf shape",(sub_wf.shape,wf.shape))
 
                     if self.display_intermediates:
                         plt.figure()
                         self.wf_array[i][j].display()
                         
-        
-        #subsample input wavefront
-        
-        #generate subsampled grid of mini-pupils and return array of output wavefronts
         @property
         def subaperture_width(self):
+        	# returns width in angular units
             return self._w*self.input_wavefront.pixelscale
         
         #return a composite wavefront if an array of output wavefronts was generated
@@ -177,6 +174,7 @@ class subapertures(poppy.OpticalElement):
                     lower_y = int((c + w*(j)  - w*self.y_apertures/2).value)
                     upper_x = int((c + w*(i+1)  - w*self.x_apertures/2).value)
                     upper_y = int((c + w*(j+1)  - w*self.y_apertures/2).value)
+                    
                     #check for padding
 
                     if sub_wf == None:
@@ -259,6 +257,14 @@ class subapertures(poppy.OpticalElement):
 class SH_WFS(subapertures):
     """
         Shack-Hartmann Wavefront Sensor Class
+        wrapper for subapertures class
+        Parameters: 
+        lenslet pitch
+        lenslet focal length
+        pixel pitch
+        number of lenslets per axis (assuming square lenslet array with n_lenslets**2 lenslets total)
+        circular aperture (True means supapertures are circular, False means they are square)
+        detector: Detector object defining pixel pitch and plate scale
     """
 
     def __init__(self,lenslet_pitch = 300*u.um,
@@ -266,6 +272,7 @@ class SH_WFS(subapertures):
                              pixel_pitch = 2.2*u.um/u.pix,
                              n_lenslets=12,
                              circular=False,
+                             detector = None,
                              **kwargs
                              ):
         
@@ -273,26 +280,28 @@ class SH_WFS(subapertures):
         self.lenslet_fl=lenslet_fl
         self.pixel_pitch=pixel_pitch
         self.r_lenslet=self.lenslet_pitch/2.
+        self.n_lenslets = n_lenslets
+
         if circular:
-            ap_keywords={"size":self.lenslet_pitch,"planetype":PlaneType.pupil}
-            aperture=poppy.CircularAperture(ap_keywords)
-            #aperturekeywords={"radius":self.r_lenslet}
+            aperture=poppy.CircularAperture(radius = self.lenslet_pitch/2, planetype = PlaneType.pupil)
         else:
             ap_keywords={"size":self.lenslet_pitch,"planetype":PlaneType.pupil}
-            aperture=poppy.SquareAperture(ap_keywords)
+            aperture=poppy.SquareAperture(size = self.lenslet_pitch, planetype = PlaneType.pupil)
+
         optic_array = np.array([[aperture,
                                               aperture],
                                     [aperture,
                                     aperture]])
         
         #expand the array
-        if n_lenslets/2 % 2 !=0:
+        if n_lenslets % 2 !=0:
             raise ValueError("aperture replication only works for even numbers of apertures")
         
         big_optic_array=optic_array.repeat(n_lenslets/2.,axis=0).repeat(n_lenslets/2.,axis=1)
 
         subapertures.__init__(self,
                                   optic_array=big_optic_array,
+                                  detector = detector,
                                   **kwargs)
 
     def append_header(self,HDU):
@@ -313,7 +322,7 @@ class SH_WFS(subapertures):
         return centroid
     @property
     def pix_lenslet(self):
-        return self.lenslet_pitch/self.pixel_pitch
+        return self.lenslet_pitch.to(u.m)/self.pixel_pitch.to(u.m)
     @property
     def max_WFE(self):
         """
@@ -322,4 +331,4 @@ class SH_WFS(subapertures):
 
         """
         _log.warn("This max wavefront error ignores lenslet aberrations")
-        return  1.0/self.lenslet_fl*self.lenslet_pitch**2/2.0
+        return  1.0/self.lenslet_fl.to(u.m)*self.lenslet_pitch.to(u.m)**2/2.0
