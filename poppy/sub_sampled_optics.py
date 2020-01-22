@@ -89,7 +89,10 @@ class subapertures(poppy.OpticalElement):
             self.overwrite_inputwavefront = overwrite_inputwavefront
             self.display_intermediates = display_intermediates
             self._propagated_flag = False #can't have propagated when initializing
+            self._centroided_flag = False #can't have centroids without propagating
+    
             OpticalElement.__init__(self, **kwargs)
+            return
                 
         def sample_wf(self, wf):
             '''
@@ -135,10 +138,11 @@ class subapertures(poppy.OpticalElement):
                     if self.display_intermediates:
                         plt.figure()
                         self.wf_array[i][j].display()
+            return
                         
         @property
         def subaperture_width(self):
-        	# returns width in angular units
+            # returns width in angular units
             return self._w*self.input_wavefront.pixelscale
         
         #return a composite wavefront if an array of output wavefronts was generated
@@ -174,7 +178,7 @@ class subapertures(poppy.OpticalElement):
                     lower_y = int((c + w*(j)  - w*self.y_apertures/2).value)
                     upper_x = int((c + w*(i+1)  - w*self.x_apertures/2).value)
                     upper_y = int((c + w*(j+1)  - w*self.y_apertures/2).value)
-                    
+
                     #check for padding
 
                     if sub_wf == None:
@@ -186,37 +190,44 @@ class subapertures(poppy.OpticalElement):
                 
             return wf
         def get_psfs(self):
-                if self.input_wavefront is None:
-                        raise ValueError("No input wavefront found.")
-            
-            
-                for i in range(self.x_apertures):
-                    for j in  range(self.y_apertures):
-                        sub_wf = self.wf_array[i][j]
-                        sub_wf.propagate_to(self.detector)
+            if self.input_wavefront is None:
+                raise ValueError("No input wavefront found.")
+    
+            for i in range(self.x_apertures):
+                for j in  range(self.y_apertures):
+                    sub_wf = self.wf_array[i][j]
+                    sub_wf.propagate_to(self.detector)
 
-                        if self.display_intermediates:
-                            plt.figure()
-                            sub_wf.display()
-            
-                self._w_out= self.wf_array[0][0].shape[0]*u.pix #subaperture width in pixels 
-                self.c_out =  self._w_out*self.x_apertures/2 #center of array         
-                self._propagated_flag = True
+                    if self.display_intermediates:
+                        plt.figure()
+                        sub_wf.display()
+        
+            self._w_out= self.wf_array[0][0].shape[0]*u.pix #subaperture width in pixels 
+            self.c_out =  self._w_out*self.x_apertures/2 #center of array         
+            self._propagated_flag = True
+            return
 
         def multiply_all(self, optic):
-                if self.input_wavefront is None:
-                        raise ValueError("No input wavefront found.")
-                for i in range(self.x_apertures):
-                    for j in  range(self.y_apertures):
-                        self.wf_array[i][j] *= optic
+            if self.input_wavefront is None:
+                raise ValueError("No input wavefront found.")
+            for i in range(self.x_apertures):
+                for j in  range(self.y_apertures):
+                    self.wf_array[i][j] *= optic
+            return
         
 
         def get_centroids(self,
                           cent_function=measure_centroid,
+                          relativeto = 'origin',
                           asFITS=True,
                           **kwargs):
             """
                 get centroid of intensity of each subwavefront
+                relative to can be either 'center' or 'origin' for default centroid function
+                note, if using wf_reconstruction method you need to either use 'center' here 
+                or provide a flat centroid list by propagating a flat wavefront through SHWFS 
+                to get proper wf reconstruction
+                recommended to keep to defaults since 'center' does weird stuff at edges of aperture
 
             """
             _log.debug("Centroid function:"+str(cent_function))
@@ -236,8 +247,10 @@ class subapertures(poppy.OpticalElement):
                         intensity_array=sub_wf.as_fits()
                     else:
                         intensity_array = sub_wf.intensity
-                    self.centroid_list[:,i,j] = cent_function(intensity_array,**kwargs)
+                    self.centroid_list[:,i,j] = cent_function(intensity_array,**kwargs, relativeto = relativeto)
+            self._centroided_flag = True
             return self.centroid_list
+
         
         def _replace_subwavefronts(self,replacement_array):
             for i in range(self.x_apertures):
@@ -253,6 +266,31 @@ class subapertures(poppy.OpticalElement):
                         wf.wavefront[lower_x:upper_x,lower_y:upper_y] = np.nan
                     else:
                         wf.wavefront[lower_x:upper_x,lower_y:upper_y] = sub_wf.wavefront 
+            return 
+
+        def reconstruct_wavefront(self, flat_centroid_list ):
+            '''
+            reconstruct wavefront using zonal reconstruction
+            returns reconstructed wavefront as an array
+            if using centroids already centered to 'center', input flat_centroid_list = [None]
+            '''
+            if self.input_wavefront is None:
+                raise ValueError("No input wavefront found.")
+            if not self._propagated_flag:
+                _log.warn("Trying to reconstruct wavefront without having propagated to detector. run sample_wf on wavefront and get_psfs first.")
+            self.get_centroids()
+            if flat_centroid_list.all()!=None:
+                y_cen, x_cen = self.centroid_list
+                y_cen_flat, x_cen_flat = flat_centroid_list
+                x_off = np.subtract(x_cen, x_cen_flat)
+                y_off = np.subtract(y_cen, y_cen_flat)
+            else:
+                y_off, x_off = self.centroid_list
+            scale = self.pixel_pitch.to(u.m)/self.lenslet_fl.to(u.m)*u.rad/self.detector.oversample
+            wf_reconstruction = zonalReconstruction(x_off*scale, y_off*scale, self.lenslet_pitch)
+
+            return wf_reconstruction
+
 
 class SH_WFS(subapertures):
     """
@@ -303,6 +341,7 @@ class SH_WFS(subapertures):
                                   optic_array=big_optic_array,
                                   detector = detector,
                                   **kwargs)
+        return 
 
     def append_header(self,HDU):
          HDU.header['SH_units']='meters'
@@ -332,3 +371,59 @@ class SH_WFS(subapertures):
         """
         _log.warn("This max wavefront error ignores lenslet aberrations")
         return  1.0/self.lenslet_fl.to(u.m)*self.lenslet_pitch.to(u.m)**2/2.0
+
+#helper functions for wavefront reconstruction:
+def zonalReconstruction(x,y,ds):
+    """
+    Simple zonal reconstructor based on Matlab example in
+    Wavefront Optics for Vision Correction. 
+    Dai, Guang-ming. 2008. 
+    Society of Photo-Optical Instrumentation Engineers. 
+    http://ebooks.spiedigitallibrary.org/book.aspx?doi=10.1117/3.769212.
+    Modified to work with rectangular spotfields
+    From Greg Allan's master's thesis (Simulation and Testing of Wavefront Reconstruction Algorithms 
+    for the Deformable Mirror (DeMi) Cubesat. Master's Thesis, Massachusetts Institute of Techonology, 2018)
+    """
+    #flatten operates in row-major order
+    g=np.concatenate(np.nan_to_num([x.flatten().to(u.radian), y.flatten().to(u.radian)]))
+    m=x.shape[0]
+    n=x.shape[1]
+    S=g
+    
+    E = getE(m,n)
+    C = getC(m,n)
+ 
+    C=np.matrix(C)
+    S=np.matrix(S)
+
+    Epinv = np.linalg.pinv(E)
+    p=Epinv*C*S.T
+    return np.multiply(p.reshape(m,n),ds)
+
+def getC(m,n):
+    C = np.matrix(np.zeros([(m-1)*n+(n-1)*m, 2*n*m]))
+
+    for i in range(m):
+        for j in range(n-1) :
+                C[i*(n-1)+j, i*n+j]=0.5
+                C[i*(n-1)+j, i*n+j+1]=0.5
+    for i in range(n):
+        for j in range(m-1):              
+                C[m*(n-1)+i*(m-1)+j, n*(m+j)+i]=0.5
+                C[m*(n-1)+i*(m-1)+j, n*(m+j+1)+i]=0.5
+    return C
+    
+    
+def getE(m,n):
+    E=np.matrix(np.zeros([(m-1)*n+(n-1)*m, n*m]))
+    for i in range(m):
+        for j in range(n-1):
+            E[i*(n-1)+j, i*n+j] = -1
+            E[i*(n-1)+j, i*n+j+1] = 1
+    for i in range(n):
+        for j in range(m-1):
+            E[m*(n-1)+i*(m-1)+j, i+j*n] = -1 
+            E[m*(n-1)+i*(m-1)+j, i+(j+1)*n] = 1
+    return E
+
+
