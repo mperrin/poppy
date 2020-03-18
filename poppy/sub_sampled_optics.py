@@ -24,17 +24,17 @@ class Subapertures(poppy.OpticalElement):
     
     #...various surfaces
     
-    subaperture(ARRAY OF OPTICS) 
+    Subaperture(ARRAY OF OPTICS) 
     #initialize this new class, where the array of optics define the subapertures (e.g. lenslets)
     
-    subapertures.sample_wf(wf) #this function takes the wavefront and subsamples it by the area of each optic
-    subapertures.get_wavefront_array() #returns an array of input sub-wavefronts multipled by subaperture optics
-    subapertures.get_psfs() #fraunhofer or fresnel propagation of each pupil  to the image/ waist
-    image=subapertures.get_composite_wavefont() # returns wavefront of image plane of all the spots put back together
-    subapertures.opd #single array made up of subapertures
-    subapertures.amplitude  #single array made up of subapertures
-    subapertures.getphasor #returns propagated array of spots from get_composite_wavefont
-    subapertures.get_centroids() # computes centroids of each subaperture after propagated to the detector
+    Subapertures.sample_wf(wf) #this function takes the wavefront and subsamples it by the area of each optic
+    Subapertures.get_wavefront_array() #returns an array of input sub-wavefronts multipled by subaperture optics
+    Subapertures.get_psfs() #fraunhofer or fresnel propagation of each pupil  to the image/ waist
+    image=Subapertures.get_composite_wavefont() # returns wavefront of image plane of all the spots put back together
+    Subapertures.opd #single array made up of subapertures
+    Subapertures.amplitude  #single array made up of subapertures
+    Subapertures.getphasor #returns propagated array of spots from get_composite_wavefont
+    Subapertures.get_centroids() # computes centroids of each subaperture after propagated to the detector
     
     
     Parameters
